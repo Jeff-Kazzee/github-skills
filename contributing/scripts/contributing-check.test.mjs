@@ -576,3 +576,10 @@ test('a guarded cd below the clone keeps its guard', () => {
   const alone = good().replace('cd lantern\n', 'cd lantern/packages || exit 1\n')
   assert.equal(setupScript(alone), 'cd packages || exit 1\necho built > out.txt\ntest -f out.txt')
 })
+
+test('a cd guard with a pipe, a redirect or a group is left whole, as before', () => {
+  for (const guard of ['|| echo "cd failed" >&2', '|| echo failed | cat', '|| { echo failed; exit 1; }']) {
+    const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', `git clone https://github.com/example/lantern.git && cd lantern ${guard}\n`)
+    assert.equal(setupScript(chained), `cd lantern ${guard}\necho built > out.txt\ntest -f out.txt`, guard)
+  }
+})
