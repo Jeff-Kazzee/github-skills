@@ -60,10 +60,11 @@ export function sections(text) {
   })
 }
 
-// The heredoc a line opens: a << outside quotes, comments and arithmetic, where the shell reads one.
+// The heredocs a line opens, in order: each << outside quotes, comments and arithmetic, where the shell reads one.
 // A $( ) inside double quotes is a command again, so a << there opens a heredoc.
-function heredocOpener(line) {
+function heredocOpeners(line) {
   const open = []
+  const found = []
   for (let i = 0; i < line.length; i++) {
     const c = line[i]
     const top = open.at(-1)
@@ -75,20 +76,22 @@ function heredocOpener(line) {
     }
     else if (c === "'") i = line.indexOf("'", i + 1)
     else if (c === '"') open.push('"')
-    else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return null
+    else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return found
     else if (line.startsWith('((', i)) { open.push('(('); i++ }
     else if (top === '((' && line.startsWith('))', i)) { open.pop(); i++ }
     else if (line.startsWith('$(', i) && line[i + 2] !== '(') { open.push('$('); i++ }
     else if (top === '$(' && c === ')') open.pop()
     else if (line.startsWith('<<<', i)) i += 2
     else if (top !== '((' && line.startsWith('<<', i)) {
-      const opener = /^<<(-?)\s*(['"]?)([\w.-]+)\2/.exec(line.slice(i))
-      if (opener) return { stripTabs: opener[1] === '-', tag: opener[3] }
-      i++
+      const opener = /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|([\w.-]+))/.exec(line.slice(i))
+      if (opener) {
+        found.push({ stripTabs: opener[1] === '-', tag: opener[2] ?? opener[3] ?? opener[4] })
+        i += opener[0].length - 1
+      } else i++
     }
-    if (i < 0) return null
+    if (i < 0) return found
   }
-  return null
+  return found
 }
 
 const blocks = body => [...body.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```\s*$/gm)].map(m => ({ lang: m[1], code: m[2] }))
@@ -99,11 +102,11 @@ export function commands(body) {
   const out = []
   let continued = false
   for (const block of blocks(body).filter(b => SHELL.test(b.lang))) {
-    let heredoc = null
+    let heredocs = []
     for (const raw of block.code.split('\n')) {
-      if (heredoc) {
+      if (heredocs.length > 0) {
         out[out.length - 1] += `\n${raw}`
-        if ((heredoc.stripTabs ? raw.replace(/^\t+/, '') : raw) === heredoc.tag) heredoc = null
+        if ((heredocs[0].stripTabs ? raw.replace(/^\t+/, '') : raw) === heredocs[0].tag) heredocs.shift()
         continue
       }
       const line = raw.replace(/^\s*\$ +/, '').trim()
@@ -111,7 +114,7 @@ export function commands(body) {
       if (continued) out[out.length - 1] += `\n${line}`
       else out.push(line)
       continued = line.endsWith('\\')
-      heredoc = heredocOpener(line)
+      heredocs = heredocOpeners(line)
     }
   }
   return out
@@ -257,8 +260,35 @@ export async function online(text) {
 // A shell word without the quotes around it.
 const unquote = word => word.replace(/^(["'])(.*)\1$/, '$2')
 
+// A clone option that takes the next word as its value, such as --branch build.
+const VALUE_OPTION = /^(-[bcjou]|--(branch|origin|config|depth|reference|reference-if-able|separate-git-dir|template|jobs|filter|upload-pack|shallow-since|shallow-exclude|server-option|bundle-uri|ref-format|remote-name|fork-name|org))$/
+
 // The folder names a clone command can create: each word's last path part, minus .git.
-const cloneNames = clone => new Set(clone.trim().split(/\s+/).map(word => unquote(word).replace(/\/+$/, '').split(/[/:]/).pop().replace(/\.git$/, '')))
+// A quoted word is one word. Options and their values name no folder.
+function cloneNames(clone) {
+  const words = clone.match(/"[^"]*"|'[^']*'|\S+/g) ?? []
+  return new Set(words.filter((word, i) => !word.startsWith('-') && !VALUE_OPTION.test(words[i - 1] ?? ''))
+    .map(word => unquote(word).replace(/\/+$/, '').split(/[/:]/).pop().replace(/\.git$/, '')))
+}
+
+// A command line without its trailing comment: a # that starts a word outside quotes.
+function withoutComment(line) {
+  for (let i = 0, quote = null; i < line.length; i++) {
+    const c = line[i]
+    if (c === '\\' && quote !== "'") i++
+    else if (quote) { if (c === quote) quote = null }
+    else if (c === "'" || c === '"') quote = c
+    else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i).trimEnd()
+  }
+  return line
+}
+
+// What is left of a cd into the clone once the runner is inside it: the path under the clone, in the same quotes.
+function cdBelow(word) {
+  const below = unquote(word).replace(/^\.\//, '').split('/').slice(1).join('/').replace(/\/+$/, '')
+  const quote = /^["']/.test(word) ? word[0] : ''
+  return below ? `cd ${quote}${below}${quote}` : ''
+}
 
 // The setup and test commands as one script, minus the clone and the cd into it, which the runner has done.
 // A pointer file has no sections, so its commands come from the whole file.
@@ -273,8 +303,13 @@ export function setupScript(text) {
   for (const step of steps) {
     if (CLONE.test(step)) {
       // A clone chained with && or a semicolon keeps what follows it, minus the first cd into the clone.
-      // Join backslash continuations first, so a wrapped clone line reads as one command.
-      const joined = step.replace(/\\\r?\n\s*/g, ' ')
+      // Join backslash continuations first, so a wrapped clone line reads as one command, and drop its comment.
+      // A heredoc body comes after the command lines and stays as it is.
+      const parts = step.split('\n')
+      let commandLines = 1
+      while (commandLines < parts.length && parts[commandLines - 1].endsWith('\\')) commandLines++
+      const command = withoutComment(parts.slice(0, commandLines).join('\n').replace(/\\\r?\n\s*/g, ' '))
+      const joined = [command, ...parts.slice(commandLines)].join('\n')
       const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
       if (rest === joined) { skipCd = true; continue }
       const names = cloneNames(/^[^;&|]*/.exec(joined)[0])
@@ -286,9 +321,8 @@ export function setupScript(text) {
       if (cd) {
         const end = cd.index + cd[0].length
         // A cd below the clone, such as lantern/packages/core, keeps the part under the clone in the same quotes.
-        const below = unquote(cd[2]).replace(/^\.\//, '').split('/').slice(1).join('/').replace(/\/+$/, '')
-        const quote = /^["']/.test(cd[2]) ? cd[2][0] : ''
-        if (below) tail = `${rest.slice(0, cd.index)}${cd[1]}cd ${quote}${below}${quote}${rest.slice(end)}`
+        const below = cdBelow(cd[2])
+        if (below) tail = `${rest.slice(0, cd.index)}${cd[1]}${below}${rest.slice(end)}`
         else tail = cd[1] ? rest.slice(0, cd.index) + rest.slice(end) : rest.slice(end).replace(/^\s*(?:&&|;)\s*/, '')
       }
       if (tail.trim()) lines.push(tail)
@@ -296,7 +330,12 @@ export function setupScript(text) {
       skipCd = !cd
       continue
     }
-    if (skipCd && /^cd\s+\S+$/.test(step)) { skipCd = false; continue }
+    if (skipCd && /^cd\s+\S+$/.test(step)) {
+      skipCd = false
+      const below = cdBelow(step.replace(/^cd\s+/, ''))
+      if (below) lines.push(below)
+      continue
+    }
     skipCd = false
     lines.push(step)
   }

@@ -400,3 +400,47 @@ test('a heredoc inside a quoted command substitution writes the file the guide s
     .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml && grep -q '^# keep$' config.yml")
   assert.deepEqual(runSetup(text, repo()), [])
 })
+
+test('a quoted heredoc delimiter with spaces keeps its body verbatim', () => {
+  const body = "a:\n\n  # keep\n  b: 1\nEND OF CONFIG"
+  assert.deepEqual(commands("```sh\ncat <<'END OF CONFIG' > c.yml\n" + body + "\npnpm build\n```\n"), ["cat <<'END OF CONFIG' > c.yml\n" + body, 'pnpm build'])
+})
+
+test('every heredoc a line opens keeps its body verbatim', () => {
+  const bodies = "one\nA\nx:\n\n  # keep\n  y: 1\nB"
+  assert.deepEqual(commands('```sh\ncat <<A > a.txt; cat <<B > b.yml\n' + bodies + '\npnpm build\n```\n'), ['cat <<A > a.txt; cat <<B > b.yml\n' + bodies, 'pnpm build'])
+})
+
+test('the value of a clone option is not the clone folder', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone --branch build https://github.com/example/lantern.git && mkdir build && cd build\n')
+  assert.equal(setupScript(text), 'mkdir build && cd build\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a quoted clone folder with a space is one name', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git "my checkout" && cd "my checkout" && test -f package.txt\n')
+  assert.equal(setupScript(text), 'test -f package.txt\necho built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a heredoc after a clone chain keeps its backslash lines', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good()
+    .replace(clone, () => "git clone https://github.com/example/lantern.git && cd lantern && cat <<'EOF' > run.sh\necho a \\\n  b\nEOF\n")
+    .replace('test -f out.txt', () => "grep -qxF 'echo a \\' run.sh")
+  assert.match(setupScript(text), /^cat <<'EOF' > run\.sh\necho a \\\n {2}b\nEOF\n/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a comment on the clone line is not a command', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git # first clone; then install dependencies\ncd lantern\n')
+  assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a cd below a standalone clone keeps the part under it', () => {
+  const text = good().replace('cd lantern\n', 'cd lantern/packages/core\n')
+  assert.equal(setupScript(text), 'cd packages/core\necho built > out.txt\ntest -f out.txt')
+})
