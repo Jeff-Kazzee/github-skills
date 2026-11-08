@@ -517,3 +517,14 @@ test('online uses the Markdown README for a folder anchor when another README si
   assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
   assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing/)
 })
+
+test('online reports a folder anchor whose README is a dangling symlink, not thrown', async t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('gone.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /broken anchor guide\/#install: the folder has no README to hold it/)
+})

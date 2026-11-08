@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -505,4 +505,14 @@ test('a folder anchor uses the Markdown README when another README sits beside i
   mkdirSync(join(dir, 'guide', 'README.adoc'))
   assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing'))
+})
+
+test('a folder anchor whose README is a dangling symlink is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('gone.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('broken anchor guide/#install: the folder has no README to hold it'))
 })
