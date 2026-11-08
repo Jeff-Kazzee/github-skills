@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-// Renders every test case through GitHub and saves the HTML, so the tests run offline against
-// real renderer output. Run it after changing cases.mjs or the template in SKILL.md.
+// Renders the media test cases through GitHub and saves the HTML, so the tests run offline against
+// real renderer output. It sends every fixture body to GitHub, so it needs --send and approval.
 
 import { createHash } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import { lintCases, mediaCases, repo } from './cases.mjs'
+import { fragmentOf, mediaCases, repo } from './cases.mjs'
 import { render } from './rules.mjs'
 
+if (!process.argv.includes('--send')) throw new Error('this sends the fixtures to GitHub. Get approval, then pass --send.')
 const golden = {}
-for (const [name, { body }] of Object.entries({ ...lintCases, ...mediaCases })) {
+for (const [name, { body }] of Object.entries(mediaCases)) {
   golden[name] = {
-    sha256: createHash('sha256').update(body).digest('hex'),
+    sha256: createHash('sha256').update(fragmentOf(body)).digest('hex'),
     html: await render(body, repo, true),
   }
 }
