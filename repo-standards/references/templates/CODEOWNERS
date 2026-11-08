@@ -1,4 +1,0 @@
-# Owners are requested for review on every change they own.
-# The last matching line wins. In an organization, name a user or a team, not the org.
-*         @{{owner}}
-/.github/ @{{owner}}
