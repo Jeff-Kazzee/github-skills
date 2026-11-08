@@ -234,8 +234,10 @@ export function setupScript(text) {
     for (const step of section ? commands(section.body) : []) {
       if (CLONE.test(step)) {
         // A clone chained with && or a semicolon keeps what follows it, minus a cd straight after the clone.
-        const rest = step.replace(/^[^;&|]*(?:&&|;)\s*/, '')
-        if (rest === step) { skipCd = true; continue }
+        // Join backslash continuations first, so a wrapped clone line reads as one command.
+        const joined = step.replace(/\\\r?\n\s*/g, ' ')
+        const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
+        if (rest === joined) { skipCd = true; continue }
         const tail = rest.replace(/^cd\s+[^\s;&|]+\s*(?:(?:&&|;)\s*|$)/, '')
         if (tail) lines.push(tail)
         skipCd = false

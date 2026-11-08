@@ -259,3 +259,13 @@ test('a GitHub Actions expression is not an unfilled field', () => {
   assert.match(lint(text.replace('Lantern\n', '{{Project}}\n'), dir).join('\n'), /unfilled/)
   rmSync(dir, { recursive: true, force: true })
 })
+
+test('a clone wrapped with line continuations still drops its cd', () => {
+  const nl = String.fromCharCode(10)
+  const cont = String.fromCharCode(92) + nl
+  const wrapped = `git clone https://github.com/example/lantern.git ${cont}  && cd lantern ${cont}  && echo built > out.txt${nl}`
+  const text = good().replace(`git clone https://github.com/example/lantern.git${nl}cd lantern${nl}`, wrapped)
+  assert.ok(text.includes(wrapped))
+  assert.doesNotMatch(setupScript(text), /cd lantern/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
