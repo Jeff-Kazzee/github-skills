@@ -471,3 +471,11 @@ test('an anchor on a folder with no README is reported', () => {
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing: the folder has no README to hold it'))
   assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/'), dir), [])
 })
+
+test('an anchor on a folder lands in its README, in any case', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#uninstall'), dir).includes('broken anchor guide/#uninstall'))
+})

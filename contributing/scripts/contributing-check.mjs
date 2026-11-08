@@ -9,7 +9,7 @@
 // Exits 1 with one line per problem.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -229,8 +229,13 @@ export function lint(text, dir, root = dir) {
     else if (fragment && statSync(path).isFile() && /\.(md|markdown)$/i.test(path)
       && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
       problems.push(`broken anchor ${url}`)
-    } else if (fragment && statSync(path).isDirectory() && !existsSync(join(path, 'README.md'))) {
-      problems.push(`broken anchor ${url}: the folder has no README to hold it`)
+    } else if (fragment && statSync(path).isDirectory()) {
+      // GitHub shows a folder's README in any case, so the anchor lands in that file.
+      const readme = readdirSync(path).find(name => /^readme\.(md|markdown)$/i.test(name))
+      if (!readme) problems.push(`broken anchor ${url}: the folder has no README to hold it`)
+      else if (!anchors(readFileSync(join(path, readme), 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
+        problems.push(`broken anchor ${url}`)
+      }
     }
   }
 

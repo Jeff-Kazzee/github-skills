@@ -478,3 +478,12 @@ test('online reports an anchor on a folder with no README', async () => {
   assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing: the folder has no README to hold it/)
   assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/)'), dir), [])
 })
+
+test('online checks an anchor on a folder against its README, in any case', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#uninstall)'), dir)).join(), /broken anchor guide\/#uninstall/)
+})
