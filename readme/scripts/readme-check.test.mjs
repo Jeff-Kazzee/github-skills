@@ -469,3 +469,12 @@ test('a four-backtick fence hides the headings and sh blocks it shows as an exam
   const text = `# T\n\n## Quick start\n\n${example}\n${f3}sh\npnpm test\n${f3}\n`
   assert.deepEqual(quickStartCommands(text), ['pnpm test'])
 })
+
+test('online reports an anchor on a folder with no README', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'page.txt'), 'x')
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing: the folder has no README to hold it/)
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/)'), dir), [])
+})

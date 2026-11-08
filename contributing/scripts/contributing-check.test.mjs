@@ -452,3 +452,22 @@ test('a four-backtick fence hides the headings and sh blocks it shows as an exam
   assert.deepEqual(sections(`# T\n\n## Real\n\n${example}`).map(s => s.heading), ['Real'])
   assert.deepEqual(commands(`${example}\n${f3}sh\npnpm test\n${f3}\n`), ['pnpm test'])
 })
+
+test('a cd into a standalone clone by another path is still dropped whole', () => {
+  for (const [clone, cd] of [
+    ['git clone https://github.com/example/lantern.git ~/src/lantern', 'cd ~/src/lantern'],
+    ['git clone https://github.com/example/lantern.git $GOPATH/src/github.com/example/lantern', 'cd $GOPATH/src/github.com/example/lantern'],
+  ]) {
+    const text = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', () => `${clone}\n${cd}\n`)
+    assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt', cd)
+    assert.deepEqual(runSetup(text, repo()), [], cd)
+  }
+})
+
+test('an anchor on a folder with no README is reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'page.txt'), 'x')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing: the folder has no README to hold it'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/'), dir), [])
+})

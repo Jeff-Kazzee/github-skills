@@ -229,6 +229,8 @@ export function lint(text, dir, root = dir) {
     else if (fragment && statSync(path).isFile() && /\.(md|markdown)$/i.test(path)
       && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
       problems.push(`broken anchor ${url}`)
+    } else if (fragment && statSync(path).isDirectory() && !existsSync(join(path, 'README.md'))) {
+      problems.push(`broken anchor ${url}: the folder has no README to hold it`)
     }
   }
 
@@ -301,6 +303,7 @@ export function setupScript(text) {
   })
   const lines = []
   let skipCd = false
+  let cloneDirs = new Set()
   for (const step of steps) {
     if (CLONE.test(step)) {
       // A clone chained with && or a semicolon keeps what follows it, minus the first cd into the clone.
@@ -312,8 +315,9 @@ export function setupScript(text) {
       const command = withoutComment(parts.slice(0, commandLines).join('\n').replace(/\\\r?\n\s*/g, ' '))
       const joined = [command, ...parts.slice(commandLines)].join('\n')
       const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
-      if (rest === joined) { skipCd = true; continue }
       const names = cloneNames(/^[^;&|]*/.exec(joined)[0])
+      cloneDirs = names
+      if (rest === joined) { skipCd = true; continue }
       // Only the first line holds the chain. Any later line is a heredoc body, kept as it is.
       const chain = rest.split('\n')[0]
       const cd = [...chain.matchAll(/(^|\s*(?:&&|;)\s*)cd\s+("[^"]*"|'[^']*'|[^\s;&|'"]+)(?=\s*(?:&&|;|$))/g)]
@@ -333,7 +337,9 @@ export function setupScript(text) {
     }
     if (skipCd && /^cd\s+\S+$/.test(step)) {
       skipCd = false
-      const below = cdBelow(step.replace(/^cd\s+/, ''))
+      // A cd below the clone keeps the part under it. A cd by another path, such as ~/src/lantern, is dropped whole.
+      const word = step.replace(/^cd\s+/, '')
+      const below = cloneDirs.has(unquote(word).replace(/^\.\//, '').split('/')[0]) ? cdBelow(word) : ''
       if (below) lines.push(below)
       continue
     }

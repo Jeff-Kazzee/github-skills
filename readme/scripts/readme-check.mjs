@@ -9,7 +9,7 @@
 // Exits 1 with one line per problem.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -281,6 +281,8 @@ export async function online(text, dir, root = repoRoot(dir)) {
       else if (images.includes(url) && !looksLikeImage(readFileSync(path))) problems.push(`${url}: not a valid image`)
       else if (fragment && /\.(md|markdown)$/i.test(path) && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decode(fragment))) {
         problems.push(`broken anchor ${url}`)
+      } else if (fragment && statSync(path).isDirectory() && !existsSync(join(path, 'README.md'))) {
+        problems.push(`broken anchor ${url}: the folder has no README to hold it`)
       }
     }
   }
