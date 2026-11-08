@@ -11,6 +11,19 @@ of the skill.
 | `green` | Required checks pass | The repo has neither bot |
 | `any-change` | The first event prints | You only want the next event |
 
+With no required checks set, every CI check gates. A head with no CI check counts as
+green only when no `.yml` or `.yaml` file in `.github/workflows` at the head lists
+`push`, `pull_request` or `pull_request_target` under `on:`, and two minutes have passed
+with no check. That green or ready line says `no CI configured`. It means that no check
+ran. It does not mean that checks passed. If such a workflow exists, `pr-wait` waits for
+its checks. If none appears within ten minutes, it exits 1 and names the workflows. The
+usual causes are a branch or path filter that skips this PR, such as a deploy workflow
+that runs only on pushes to `prod`, or a run that waits for approval in the Actions tab.
+Do not restart `pr-wait` on the same head after this exit, because it exits the same way
+again. Open the Actions tab. If a filter skips this PR, report that the PR has no CI and
+stop watching it. CI outside GitHub Actions is not detected. A check from external CI
+that registers after the two minutes can arrive after a `no CI configured` exit.
+
 Greptile and Macroscope are the gating review bots in this house setup, set in the
 script's `GATING_BOTS`. CodeRabbit is advisory: the script reports it and never waits for
 it. Change those lists for your own repos.
