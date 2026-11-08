@@ -211,7 +211,6 @@ const anchor = heading => heading.toLowerCase().trim().replace(/[^\p{L}\p{N} _-]
 // npmjs.com answers scripts with 403, so a package page is read from the registry.
 const probeUrl = url => url.replace(/^https:\/\/(www\.)?npmjs\.(com|org)\/package\//, 'https://registry.npmjs.org/')
 
-// GitHub's anchor for each heading, with its -1 suffix for repeats, plus any explicit id or name.
 // GitHub shows a folder's README, so an anchor on a folder lands in it. The anchor passes
 // when any Markdown README in the folder holds it, so the answer does not depend on which
 // README the OS lists first. A README in another format, such as README.rst, holds the
@@ -232,6 +231,7 @@ function folderAnchor(folder, anchor, url) {
   }
 }
 
+// GitHub's anchor for each heading, with its -1 suffix for repeats, plus any explicit id or name.
 function anchors(text) {
   const seen = new Map()
   const found = new Set()
