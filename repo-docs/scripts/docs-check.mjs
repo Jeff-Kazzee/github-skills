@@ -10,7 +10,7 @@
 // title or no verified line, decision records named out of pattern, and Writing law
 // violations. Exits 1 with one "path:line: problem" line per problem.
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -188,27 +188,34 @@ function walk(root) {
   return files.sort()
 }
 
-// True only when every segment matches the disk's spelling, as GitHub requires.
+// Walks the path one segment at a time against directory listings, so the answer is the
+// same on a case-sensitive and a case-insensitive file system. Returns 'exact' when every
+// segment matches the disk's spelling, as GitHub requires, 'case' when a segment differs
+// only in case, and null when the path does not exist.
 const listing = new Map()
-function existsExact(path) {
-  const full = resolve(path)
-  if (!existsSync(full)) return false
-  let dir = full
+function lookup(path) {
+  let dir = resolve(path)
   const parts = []
   while (dirname(dir) !== dir) {
     parts.unshift(basename(dir))
     dir = dirname(dir)
   }
+  let found = 'exact'
   for (const part of parts) {
     if (!listing.has(dir)) {
       try { listing.set(dir, readdirSync(dir)) } catch { listing.set(dir, null) }
     }
     const names = listing.get(dir)
-    if (names && !names.includes(part)) return false
-    dir = join(dir, part)
+    if (names && !names.includes(part)) {
+      const other = names.find(name => name.toLowerCase() === part.toLowerCase())
+      if (!other) return null
+      found = 'case'
+      dir = join(dir, other)
+    } else dir = join(dir, part)
   }
-  return true
+  return existsSync(dir) ? found : null
 }
+const existsExact = path => lookup(path) === 'exact'
 
 // GitHub renders a link only when it names the file or folder exactly. A site generator
 // also resolves a bare name to its .md file or folder index, so --site allows those.
@@ -218,9 +225,9 @@ function resolveTarget(from, target, root, site) {
   for (const candidate of tries) {
     if (!existsExact(candidate)) continue
     if (statSync(candidate).isFile()) return candidate
-    if (candidate === base) return ['README.md', 'index.md', '_index.md'].map(name => join(base, name)).find(existsExact) ?? base
+    if (candidate === base) return ['README.md', 'index.md', '_index.md', 'index.mdx'].map(name => join(base, name)).find(existsExact) ?? base
   }
-  if (tries.some(candidate => existsSync(candidate))) return { wrongCase: true }
+  if (tries.some(candidate => lookup(candidate) === 'case')) return { wrongCase: true }
   return null
 }
 
@@ -254,7 +261,17 @@ export function checkTree(root, { wiki = false, index, site = false } = {}) {
     for (const link of links(text, { wiki })) {
       const { target } = link
       if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('//')) continue
-      if (site && (target.startsWith('/') || /\.html?(#|$)/i.test(target))) continue
+      if (site && (target.startsWith('/') || /\.html?(#|$)/i.test(target))) {
+        // The route is not checked, but the page it names still counts as reached.
+        let route = target.split('#')[0].split('?')[0]
+        try { route = decodeURIComponent(route) } catch {}
+        const hit = resolveTarget(full, route.replace(/\.html?$/i, ''), root, true)
+        if (typeof hit === 'string') {
+          const rel = relative(root, hit).split(sep).join('/')
+          if (graph.has(rel)) graph.get(file).add(rel)
+        }
+        continue
+      }
       if (link.wiki) {
         const [page, fragment] = target.split('#')
         const hit = byWikiName.get(wikiName(page))
@@ -319,4 +336,4 @@ function main() {
   console.log(`ok: ${dir}, ${pages} pages`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+if (realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) main()
