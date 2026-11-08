@@ -278,6 +278,29 @@ def triggers_on_pr(text: str) -> bool:
     return False
 
 
+def flow_keys(body: str) -> list[str]:
+    """The top-level keys of a YAML flow mapping body, the text between its outer
+    braces. Commas and colons inside nested braces, brackets or quotes are skipped."""
+    keys, depth, quote, start = [], 0, "", 0
+    for index, char in enumerate(body + ","):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            entry = body[start:index]
+            key = entry.split(":", 1)[0] if ":" in entry else entry
+            if key.strip():
+                keys.append(key)
+            start = index + 1
+    return keys
+
+
 def workflow_events(inline: str, following: list[str]) -> set[str]:
     """The event names in an `on:` block: the scalar or flow list on the `on:` line,
     or the keys and list items one level below it. Values nested deeper, such as
@@ -288,6 +311,9 @@ def workflow_events(inline: str, following: list[str]) -> set[str]:
 
     inline = re.sub(r"(?:^|\s)#.*", "", inline).strip()
     if inline:
+        if inline.startswith("{"):
+            # A flow mapping: the event names are its top-level keys.
+            return {clean(key) for key in flow_keys(inline[1:-1] if inline.endswith("}") else inline[1:])}
         return {clean(part) for part in inline.strip("[]").split(",") if clean(part)}
     rows = []
     for line in following:

@@ -520,6 +520,20 @@ class LateCiChecks(unittest.TestCase):
         ):
             self.assertFalse(pr_wait.triggers_on_pr(text), text)
 
+    def test_flow_mapping_events_count(self):
+        for text in (
+            "on: {pull_request: {}}\n",
+            "on: {push: {}, pull_request: {}}\n",
+            "on: {workflow_dispatch: {}, push: {branches: [main, dev]}}\n",
+            "on: { 'pull_request_target': { types: [opened] } }\n",
+        ):
+            self.assertTrue(pr_wait.triggers_on_pr(text), text)
+        for text in (
+            "on: {workflow_dispatch: {inputs: {push: {type: boolean}}}}\n",
+            "on: {schedule: [{cron: '0 3 * * *'}]}\n",
+        ):
+            self.assertFalse(pr_wait.triggers_on_pr(text), text)
+
     def test_event_words_inside_inputs_do_not_count(self):
         for text in (
             "on:\n  workflow_dispatch:\n    inputs:\n      mode:\n        description: 'Choose whether to push the release'\njobs: {}\n",
