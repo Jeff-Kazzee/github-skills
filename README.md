@@ -36,6 +36,8 @@ node --test */scripts/*.test.mjs
 
 CI uses Node 24 and Python 3.13. The `pr-wait` tests stub every `gh` call, so they never call GitHub.
 
+The Node scripts need Node 22.18 or later on the 22 line, or Node 24.2 or later. Older versions lack `import.meta.main`, so a checker started through a loader that maps its path can exit 0 without running.
+
 ## Notes
 
 These skills were written for one person's workflow. Some rules name that owner, for example the GitHub account that `review-gate` trusts. Change those lines for your own setup.

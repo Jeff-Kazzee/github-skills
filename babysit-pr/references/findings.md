@@ -37,12 +37,12 @@ A finding is a lead, not a fact. For each one:
 
 - Write a test that fails on the current head for the reason the finding gives. Run it
   and keep the failing output.
-- If it does not fail, the finding does not hold. Keep the command and its output. That
-  evidence is the reply.
-- A passing test rules a finding out only when it covers the conditions the finding
-  names: the platform, the service, the input shape. A mock that skips those conditions
-  is inconclusive. The finding stays open until evidence that covers them rules it
-  out, or a fix addresses it.
+- If it does not fail, check that it covers the conditions the finding names: the
+  platform, the service, the input shape. Only then does the finding not hold. Keep the
+  command and its output. That evidence is the reply.
+- A passing test that skips those conditions, such as a mock that leaves out the
+  service, is inconclusive. The finding stays open until evidence that covers them rules
+  it out, or a fix addresses it.
 - Look for the same bug in sibling code. A wrong pattern in one checker is usually
   copied into the others. Add those as new findings with their own tests.
 
@@ -61,8 +61,11 @@ with the command that shows it.
     When the head is `dev`, `prod`, `main` or a branch you did not create, never push to
     it. Open the fix PR into the head branch. The open PR gets the fixes when that fix
     PR merges.
-  - Merged PR: branch from the base the PR merged into, and open the fix PR into that
-    base as section 7 says.
+  - Open PR from a fork: `origin/<head branch>` is not the head. Fetch it with
+    `git fetch origin pull/<n>/head`, and push to the fork's remote, not to `origin`.
+  - Merged PR: branch from the branch the repo uses for work, which is `dev` in a repo
+    with `dev` and `prod`, and open the fix PR into it as section 7 says. A merged
+    promotion into `prod` gets its fix PR into `dev`, never into `prod`.
 - Fix each reproduced finding with the smallest change that makes its test pass. Keep
   each test in the same commit as its fix.
 - Many findings across several files can go to parallel workers, one worker per group
@@ -80,13 +83,18 @@ Reply in each thread with [reply-templates.md](reply-templates.md):
 
 - Fixed: the commit SHA and the test name that proves it.
 - Not reproduced: the command and output, and a question asking the reviewer whether
-  you misread the claim.
+  you misread the claim. The thread still resolves under the rule below. An answer
+  reopens the finding only when it brings new evidence.
 - Deferred: only with Jeff's yes, and only with an issue link in the reply. A deferred
   finding counts as open until Jeff approves the deferral.
 
-Resolve a thread when its fix is on the PR head and its test passes there, or when its
-not-reproduced evidence is posted, or when Jeff has approved its deferral and the issue
-is filed. Post replies only after Jeff approves the text, as step 7 of the skill says.
+Resolve a thread when its fix is on the PR head and its test passes there, or when Jeff
+has approved its deferral and the issue is filed. Resolve a not-reproduced thread once
+its evidence is posted, you have told Jeff what the finding claimed and why it does not
+hold, and he says yes (Jeff, 2026-11-08). A reviewer can be wrong, and a merge must not
+wait forever on one, so this resolved thread does not block section 6. If the reviewer
+answers with new evidence, start again at section 2. Post replies only after Jeff
+approves the text, as step 7 of the skill says.
 
 A finding with no thread, such as one in a review summary, gets one PR comment that
 lists each such finding with its outcome and fix commit. GitHub cannot resolve it, so
@@ -136,7 +144,9 @@ git revert -m 1 <merge sha>
 ```
 
 For a squash merge, `git revert <squash sha>`. For a PR that landed by rebase, revert
-every commit it landed, oldest to newest, in one commit:
+every commit it landed, newest to oldest, in one commit. The range command below uses
+that order. Reverting the oldest first can conflict when later commits change the same
+lines:
 
 ```sh
 git revert --no-commit <first landed sha>^..<last landed sha>

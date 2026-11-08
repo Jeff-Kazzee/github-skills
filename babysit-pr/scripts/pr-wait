@@ -11,7 +11,8 @@ Progress and errors that do not end the run go to stderr.
 --until
   green       required checks passed on the current head (every CI check when
               the base branch requires none). A head with no CI check counts only
-              when no workflow in .github/workflows runs on push or pull requests
+              when no workflow in .github/workflows at the head runs on push or
+              pull requests, none on the base branch runs on pull_request_target,
               and two minutes passed. That line says "no CI configured". If such a
               workflow exists and no check appears in ten minutes, exit 1.
   ready      green, Greptile or Macroscope reviewed the current head, and no
@@ -266,15 +267,16 @@ def required_checks(repo: str, base: str) -> set[str]:
     return names
 
 
-def triggers_on_pr(text: str) -> bool:
-    """Whether a workflow's top-level `on:` names push or a pull request event.
-    Only that block counts, because jobs often mention github.event.pull_request."""
+def triggers_on_pr(text: str, events: set[str] = CI_EVENTS) -> bool:
+    """Whether a workflow's top-level `on:` names one of events, by default push or
+    a pull request event. Only that block counts, because jobs often mention
+    github.event.pull_request."""
     lines = text.lstrip(chr(0xFEFF)).splitlines()
     for index, line in enumerate(lines):
         start = re.match(r"""(?:on|"on"|'on')\s*:(.*)""", line)
         if not start:
             continue
-        return bool(workflow_events(start.group(1), lines[index + 1:]) & CI_EVENTS)
+        return bool(workflow_events(start.group(1), lines[index + 1:]) & events)
     return False
 
 
@@ -309,7 +311,17 @@ def workflow_events(inline: str, following: list[str]) -> set[str]:
     def clean(token: str) -> str:
         return token.strip().strip("\"'").strip()
 
+    def depth(text: str) -> int:
+        return sum(text.count(c) for c in "[{") - sum(text.count(c) for c in "]}")
+
     inline = re.sub(r"(?:^|\s)#.*", "", inline).strip()
+    # A flow list or mapping can span lines. Read on until its brackets close.
+    rest = iter(following)
+    while inline.startswith(("[", "{")) and depth(inline) > 0:
+        more = next(rest, None)
+        if more is None:
+            break
+        inline += " " + re.sub(r"(?:^|\s)#.*", "", more).strip()
     if inline:
         if inline.startswith("{"):
             # A flow mapping: the event names are its top-level keys.
@@ -340,12 +352,22 @@ def workflow_events(inline: str, following: list[str]) -> set[str]:
     return events
 
 
-def pr_workflows(repo: str, head: str) -> list[str]:
-    """Workflow files at the head that run on push or pull requests. Only a repo
-    with none may count as having no CI, so a file that cannot be read counts."""
+def pr_workflows(repo: str, head: str, base: str) -> list[str]:
+    """Workflow files that may run on this PR: those at the head that run on push
+    or pull requests, and those on the base branch that run on pull_request_target,
+    because GitHub runs that event from the base branch."""
+    found = workflows_at(repo, head, CI_EVENTS)
+    on_base = workflows_at(repo, base, {"pull_request_target"})
+    return found + [f"{path} on {base}" for path in on_base if path not in found]
+
+
+def workflows_at(repo: str, ref: str, events: set[str]) -> list[str]:
+    """Workflow files at ref whose `on:` names one of events. Only a repo with none
+    may count as having no CI, so a file that cannot be read counts."""
+    ref = quote(ref, safe="")
     try:
         paths = gh_lines([
-            "api", f"repos/{repo}/contents/{WORKFLOWS_DIR}?ref={head}",
+            "api", f"repos/{repo}/contents/{WORKFLOWS_DIR}?ref={ref}",
             "--jq", '.[] | select(.type == "file") | .path',
         ])
     except GhError as error:
@@ -360,7 +382,7 @@ def pr_workflows(repo: str, head: str) -> list[str]:
         if not path.endswith((".yml", ".yaml")):
             continue
         try:
-            raw = gh(["api", f"repos/{repo}/contents/{quote(path)}?ref={head}", "--jq", ".content"]).stdout
+            raw = gh(["api", f"repos/{repo}/contents/{quote(path)}?ref={ref}", "--jq", ".content"]).stdout
             text = base64.b64decode(raw).decode("utf-8-sig")
         except GhError as error:
             if error.transient:
@@ -370,7 +392,7 @@ def pr_workflows(repo: str, head: str) -> list[str]:
         except ValueError:  # bad base64 or not UTF-8
             text = ""
         # GitHub sends no content for a file over 1 MB.
-        if not text.strip() or triggers_on_pr(text):
+        if not text.strip() or triggers_on_pr(text, events):
             found.append(path)
     return found
 
@@ -391,7 +413,7 @@ class Watcher:
         self.prev_snapshot: list[tuple[str, str]] | None = None
         self.head_since: tuple[str, float] | None = None
         self.pr_files: dict[str, set[str]] = {}
-        self.workflows: dict[str, list[str]] = {}
+        self.workflows: dict[tuple[str, str], list[str]] = {}
 
     def load(self) -> Json | None:
         try:
@@ -412,12 +434,14 @@ class Watcher:
             self.printed.add(line)
             print(f"#{self.pr} {line}", flush=True)
 
-    def emit(self, key: str, line: str) -> None:
-        """Print an event once per PR, across restarts."""
+    def emit(self, key: str, line: str, on_baseline: bool = False) -> None:
+        """Print an event once per PR, across restarts. The baseline poll prints only
+        a line marked on_baseline: a state that blocks ready and would stay silent."""
         if key in self.reported:
             return
         self.reported.add(key)
-        if not self.baseline:
+        if not self.baseline or on_baseline:
+            # A printed line is an event, so --until any-change stops on it, first poll or not.
             self.events += 1
             self.say(line)
 
@@ -553,9 +577,9 @@ class Watcher:
         # No CI check yet. Read the workflows to tell late CI from no CI.
         ci_expected: list[str] = []
         if not gate:
-            if head not in self.workflows:
-                self.workflows[head] = pr_workflows(self.repo, head)
-            ci_expected = self.workflows[head]
+            if (head, base) not in self.workflows:
+                self.workflows[head, base] = pr_workflows(self.repo, head, base)
+            ci_expected = self.workflows[head, base]
         no_ci = not gate and not ci_expected and waited >= NO_CI_GRACE_SECONDS
         gate_done = (bool(gate) or no_ci) and all(bucket(n) != "pending" for n in gate)
         all_done = bool(gate) and gate_done and all(c["bucket"] != "pending" for c in watched.values())
@@ -615,6 +639,7 @@ class Watcher:
                     f"botfail:{bot}:{head}",
                     f"{bot} check failed on {short} with no review or summary of the head, "
                     f"so it may have errored: {', '.join(failed)} {links}",
+                    on_baseline=True,
                 )
             key = f"bot:{bot}:{head}"
             was_done = key in self.reported

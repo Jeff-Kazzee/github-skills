@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -399,4 +399,166 @@ test('a heredoc inside a quoted command substitution writes the file the guide s
     .replace('echo built > out.txt', () => "value=\"$(cat <<'EOF'\n  port: 8080\n# keep\nEOF\n)\"\necho \"$value\" > config.yml")
     .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml && grep -q '^# keep$' config.yml")
   assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a quoted heredoc delimiter with spaces keeps its body verbatim', () => {
+  const body = "a:\n\n  # keep\n  b: 1\nEND OF CONFIG"
+  assert.deepEqual(commands("```sh\ncat <<'END OF CONFIG' > c.yml\n" + body + "\npnpm build\n```\n"), ["cat <<'END OF CONFIG' > c.yml\n" + body, 'pnpm build'])
+})
+
+test('every heredoc a line opens keeps its body verbatim', () => {
+  const bodies = "one\nA\nx:\n\n  # keep\n  y: 1\nB"
+  assert.deepEqual(commands('```sh\ncat <<A > a.txt; cat <<B > b.yml\n' + bodies + '\npnpm build\n```\n'), ['cat <<A > a.txt; cat <<B > b.yml\n' + bodies, 'pnpm build'])
+})
+
+test('the value of a clone option is not the clone folder', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone --branch build https://github.com/example/lantern.git && mkdir build && cd build\n')
+  assert.equal(setupScript(text), 'mkdir build && cd build\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a quoted clone folder with a space is one name', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git "my checkout" && cd "my checkout" && test -f package.txt\n')
+  assert.equal(setupScript(text), 'test -f package.txt\necho built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a heredoc after a clone chain keeps its backslash lines', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good()
+    .replace(clone, () => "git clone https://github.com/example/lantern.git && cd lantern && cat <<'EOF' > run.sh\necho a \\\n  b\nEOF\n")
+    .replace('test -f out.txt', () => "grep -qxF 'echo a \\' run.sh")
+  assert.match(setupScript(text), /^cat <<'EOF' > run\.sh\necho a \\\n {2}b\nEOF\n/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a comment on the clone line is not a command', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git # first clone; then install dependencies\ncd lantern\n')
+  assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a cd below a standalone clone keeps the part under it', () => {
+  const text = good().replace('cd lantern\n', 'cd lantern/packages/core\n')
+  assert.equal(setupScript(text), 'cd packages/core\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a four-backtick fence hides the headings and sh blocks it shows as an example', () => {
+  const f3 = '`'.repeat(3)
+  const f4 = '`'.repeat(4)
+  const example = `${f4}md\n## Running tests\n\n${f3}sh\nrm -rf /tmp/example\n${f3}\n${f4}\n`
+  assert.deepEqual(sections(`# T\n\n## Real\n\n${example}`).map(s => s.heading), ['Real'])
+  assert.deepEqual(commands(`${example}\n${f3}sh\npnpm test\n${f3}\n`), ['pnpm test'])
+})
+
+test('a cd into a standalone clone by another path is still dropped whole', () => {
+  for (const [clone, cd] of [
+    ['git clone https://github.com/example/lantern.git ~/src/lantern', 'cd ~/src/lantern'],
+    ['git clone https://github.com/example/lantern.git $GOPATH/src/github.com/example/lantern', 'cd $GOPATH/src/github.com/example/lantern'],
+  ]) {
+    const text = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', () => `${clone}\n${cd}\n`)
+    assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt', cd)
+    assert.deepEqual(runSetup(text, repo()), [], cd)
+  }
+})
+
+test('an anchor on a folder with no README is reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'page.txt'), 'x')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing: the folder has no README to hold it'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/'), dir), [])
+})
+
+test('an anchor on a folder lands in its README, in any case', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#uninstall'), dir).includes('broken anchor guide/#uninstall'))
+})
+
+test('an anchor on a folder whose README is not Markdown is not reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('an anchor on a folder that cannot be listed is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o311)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: the folder cannot be listed'))
+})
+
+test('a folder anchor uses the Markdown README when another README sits beside it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  mkdirSync(join(dir, 'guide', 'README.adoc'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing'))
+})
+
+test('a folder anchor whose README is a dangling symlink is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('gone.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('broken anchor guide/#install: the folder has no README to hold it'))
+})
+
+test('a malformed fragment in a folder or file link is a broken anchor, not a throw', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#%E0%A4%A'), dir).includes('broken anchor guide/#%E0%A4%A'))
+  assert.ok(lint(good().replace('docs/style.md#naming', 'docs/style.md#%E0%A4%A'), dir).includes('broken anchor docs/style.md#%E0%A4%A'))
+})
+
+test('a folder anchor passes when any Markdown README in the folder holds it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.markdown'), '# Guide\n')
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('a folder anchor whose README is a symlink loop is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('README.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
+})
+
+test('a folder anchor whose README cannot be read is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide', 'README.md'), 0o000)
+  t.after(() => chmodSync(join(dir, 'guide', 'README.md'), 0o644))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still read a file after chmod 000') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: EACCES'))
+})
+
+test('a folder anchor on a folder that can be listed but not entered is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o644)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
 })
