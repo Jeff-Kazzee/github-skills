@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -212,4 +213,29 @@ test('the command line exits 1 on a problem and 0 when clean', () => {
   assert.match(bad.stderr, /no verified line/)
   const good = spawnSync(process.execPath, [script, tree({ 'README.md': page('Docs') })], { encoding: 'utf8' })
   assert.equal(good.status, 0, good.stderr)
+})
+
+test('a docs root typed in another case passes on a case-insensitive file system', t => {
+  const root = tree({ 'Docs/README.md': page('Docs', '[Guide](guide.md)'), 'Docs/guide.md': page('Guide') })
+  const typed = join(root, 'docs')
+  if (!existsSync(typed)) return t.skip('this file system is case-sensitive')
+  assert.deepEqual(checkTree(typed).problems, [])
+})
+
+test('a listing that fails for a reason other than a missing folder is unverifiable, not broken', t => {
+  const root = tree({ 'README.md': page('Docs', '[Guide](sub/guide.md)'), 'sub/guide.md': page('Guide') })
+  const real = fs.readdirSync
+  // The link lookup lists a folder with no options. The tree walk passes withFileTypes and still works.
+  fs.readdirSync = (dir, ...rest) => {
+    if (rest.length === 0 && basename(String(dir)) === 'sub') throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' })
+    return real(dir, ...rest)
+  }
+  syncBuiltinESMExports()
+  t.after(() => { fs.readdirSync = real; syncBuiltinESMExports() })
+  assert.deepEqual(checkTree(root).problems, ['README.md:7: cannot check sub/guide.md: the folder sub cannot be listed to compare the case', 'sub/guide.md:1: orphan: no link path from README.md'])
+})
+
+test('an anchor on a folder with no index page is reported', () => {
+  const found = problems({ 'README.md': page('Docs', '[Guide](guide/#missing) [Page](guide/page.md) [Folder](guide/)'), 'guide/page.md': page('Page') })
+  assert.deepEqual(found, ['README.md:7: broken anchor guide/#missing: the folder has no index page to hold it'])
 })

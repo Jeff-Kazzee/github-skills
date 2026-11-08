@@ -11,7 +11,7 @@
 // violations. Exits 1 with one "path:line: problem" line per problem.
 
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PAGE = /\.(md|mdx|markdown)$/i
@@ -193,21 +193,28 @@ function walk(root) {
 // segment matches the disk's spelling, as GitHub requires, 'case' when a segment differs
 // only in case, { unlisted: dir } when a folder on the path cannot be listed, and null
 // when the path does not exist. A folder above the docs root came from the command line,
-// not from a link, so its listing is not needed.
+// not from a link, so its listing is not needed, and a path under the root keeps the root's
+// spelling.
 const listing = new Map()
 const above = (dir, root) => dir !== root && (root + sep).startsWith(dir.endsWith(sep) ? dir : dir + sep)
 function lookup(path, root) {
   let dir = resolve(path)
   const parts = []
-  while (dirname(dir) !== dir) {
-    parts.unshift(basename(dir))
-    dir = dirname(dir)
+  const inside = relative(root, dir)
+  if (inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)) {
+    parts.push(...inside.split(sep).filter(Boolean))
+    dir = root
+  } else {
+    while (dirname(dir) !== dir) {
+      parts.unshift(basename(dir))
+      dir = dirname(dir)
+    }
   }
   let found = 'exact'
   for (const part of parts) {
     if (!listing.has(dir)) {
-      // Only a denied listing is unknown. A file or a missing folder lists nothing.
-      try { listing.set(dir, readdirSync(dir)) } catch (error) { listing.set(dir, ['EACCES', 'EPERM'].includes(error.code) ? null : []) }
+      // A file or a missing folder lists nothing. Any other failure, such as EACCES or EIO, leaves the listing unknown.
+      try { listing.set(dir, readdirSync(dir)) } catch (error) { listing.set(dir, ['ENOENT', 'ENOTDIR'].includes(error.code) ? [] : null) }
     }
     const names = listing.get(dir)
     if (!names && !above(dir, root)) return { unlisted: dir }
@@ -311,6 +318,8 @@ export function checkTree(root, { wiki = false, index, site = false } = {}) {
       if (graph.has(rel)) graph.get(file).add(rel)
       if (fragment && PAGE.test(hit) && !anchorsOf(hit).has(decodeURIComponent(fragment))) {
         report(file, link.line, `broken anchor ${target}`)
+      } else if (fragment && statSync(hit).isDirectory()) {
+        report(file, link.line, `broken anchor ${target}: the folder has no index page to hold it`)
       }
     }
   }
