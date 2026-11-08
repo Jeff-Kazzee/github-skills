@@ -98,8 +98,11 @@ other thread has its decline, question or defer reply.
 
 ## 5. Resolve, summarize and ask for another look
 
-1. Resolve a thread only after its reply posted. Resolve an accepted or deferred thread
-   then. Resolve a decline only after you tell Jeff what the finding claimed and why the
+1. Resolve a thread only after its reply posted, and only under the closure rules in
+   [references/findings.md](references/findings.md) section 5. Resolve an accepted
+   thread once its fix is on the PR head and its test passes there, not only on a fix
+   branch. Resolve a deferred thread once Jeff approves the deferral and the issue is
+   filed. Resolve a decline only after you tell Jeff what the finding claimed and why the
    evidence says it does not hold, and he says yes (Jeff, 2026-11-08). Leave a question
    open until the reviewer answers.
 

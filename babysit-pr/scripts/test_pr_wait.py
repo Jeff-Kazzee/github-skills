@@ -561,6 +561,13 @@ class LateCiChecks(unittest.TestCase):
             self.assertTrue(pr_wait.triggers_on_pr(text), text)
         self.assertFalse(pr_wait.triggers_on_pr("on: [workflow_dispatch,\n  schedule]\njobs:\n  a:\n    if: github.event_name == 'push'\n"))
 
+    def test_quoted_brackets_do_not_close_a_flow_collection(self):
+        for text in (
+            'on: {workflow_dispatch: {inputs: {x: {default: "]"}}},\n  pull_request: {}}\njobs: {}\n',
+            "on: {workflow_dispatch: {inputs: {x: {default: '}'}}},\n  pull_request: {}}\njobs: {}\n",
+        ):
+            self.assertTrue(pr_wait.triggers_on_pr(text), text)
+
     def test_event_words_inside_inputs_do_not_count(self):
         for text in (
             "on:\n  workflow_dispatch:\n    inputs:\n      mode:\n        description: 'Choose whether to push the release'\njobs: {}\n",

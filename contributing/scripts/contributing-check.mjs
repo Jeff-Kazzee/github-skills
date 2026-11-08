@@ -33,6 +33,8 @@ const MAX_POINTER_WORDS = 250
 const HYPE = /\b(blazing(ly)?|revolutionary|world-class|seamless(ly)?|powerful|robust|cutting-edge|best-in-class|game-changing|effortless(ly)?|next-generation|stunning|amazing|awesome|delightful|supercharge[sd]?)\b/i
 const SHELL = /^(sh|bash|shell|console|zsh)$/i
 const CLONE = /^(git clone|gh repo (clone|fork))\b/
+// A simple `|| command` guard after a cd: no pipe, redirect, group or quotes, up to the next && or ; or the end.
+const GUARD = /^\s*\|\|[^;&|{}()'"]*(?=\s*(?:&&|;|$))/
 const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe'
 const HEALTH_DIRS = ['', '.github', 'docs']
 
@@ -345,14 +347,19 @@ export function setupScript(text) {
       if (rest === joined) { skipCd = true; continue }
       // Only the first line holds the chain. Any later line is a heredoc body, kept as it is.
       const chain = rest.split('\n')[0]
-      const cd = [...chain.matchAll(/(^|\s*(?:&&|;)\s*)cd\s+("[^"]*"|'[^']*'|[^\s;&|'"]+)(?=\s*(?:&&|;|$))/g)]
-        .find(m => names.has(unquote(m[2]).replace(/^\.\//, '').split('/')[0]))
+      // A guard such as `|| exit 1` belongs to the cd, so it is dropped or kept with it. A guard with
+      // a pipe, a redirect, a group or quotes is not parsed, and that cd stays as written.
+      const guardOf = after => /^\s*\|\|/.test(after) ? GUARD.exec(after)?.[0] ?? null : ''
+      const cd = [...chain.matchAll(/(^|\s*(?:&&|;)\s*)cd\s+("[^"]*"|'[^']*'|[^\s;&|'"]+)(?=\s*(?:&&|\|\||;|$))/g)]
+        .find(m => names.has(unquote(m[2]).replace(/^\.\//, '').split('/')[0])
+          && guardOf(chain.slice(m.index + m[0].length)) !== null)
       let tail = rest
       if (cd) {
-        const end = cd.index + cd[0].length
+        const guard = guardOf(rest.slice(cd.index + cd[0].length))
+        const end = cd.index + cd[0].length + guard.length
         // A cd below the clone, such as lantern/packages/core, keeps the part under the clone in the same quotes.
         const below = cdBelow(cd[2])
-        if (below) tail = `${rest.slice(0, cd.index)}${cd[1]}${below}${rest.slice(end)}`
+        if (below) tail = `${rest.slice(0, cd.index)}${cd[1]}${below}${guard}${rest.slice(end)}`
         else tail = cd[1] ? rest.slice(0, cd.index) + rest.slice(end) : rest.slice(end).replace(/^\s*(?:&&|;)\s*/, '')
       }
       if (tail.trim()) lines.push(tail)
@@ -360,12 +367,13 @@ export function setupScript(text) {
       skipCd = !cd
       continue
     }
-    if (skipCd && /^cd\s+\S+$/.test(step)) {
+    const standalone = skipCd && /^cd\s+(\S+)(\s*\|\|[^;&|{}()'"]*)?$/.exec(step)
+    if (standalone) {
       skipCd = false
-      // A cd below the clone keeps the part under it. A cd by another path, such as ~/src/lantern, is dropped whole.
-      const word = step.replace(/^cd\s+/, '')
+      // A cd below the clone keeps the part under it, and its guard. A cd by another path, such as ~/src/lantern, is dropped whole.
+      const [, word, guard = ''] = standalone
       const below = cloneDirs.has(unquote(word).replace(/^\.\//, '').split('/')[0]) ? cdBelow(word) : ''
-      if (below) lines.push(below)
+      if (below) lines.push(below + guard)
       continue
     }
     skipCd = false
