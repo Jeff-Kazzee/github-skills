@@ -444,3 +444,11 @@ test('a cd below a standalone clone keeps the part under it', () => {
   const text = good().replace('cd lantern\n', 'cd lantern/packages/core\n')
   assert.equal(setupScript(text), 'cd packages/core\necho built > out.txt\ntest -f out.txt')
 })
+
+test('a four-backtick fence hides the headings and sh blocks it shows as an example', () => {
+  const f3 = '`'.repeat(3)
+  const f4 = '`'.repeat(4)
+  const example = `${f4}md\n## Running tests\n\n${f3}sh\nrm -rf /tmp/example\n${f3}\n${f4}\n`
+  assert.deepEqual(sections(`# T\n\n## Real\n\n${example}`).map(s => s.heading), ['Real'])
+  assert.deepEqual(commands(`${example}\n${f3}sh\npnpm test\n${f3}\n`), ['pnpm test'])
+})

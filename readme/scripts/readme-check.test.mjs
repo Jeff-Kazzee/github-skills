@@ -461,3 +461,11 @@ test('the command line reads --root as the repository root', async () => {
   const run = await new Promise(done => execFile(process.execPath, [checker, '--root', root, join(dir, 'README.md'), '--online'], (error, stdout, stderr) => done({ code: error?.code ?? 0, stderr })))
   assert.equal(run.code, 0, run.stderr)
 })
+
+test('a four-backtick fence hides the headings and sh blocks it shows as an example', () => {
+  const f3 = '`'.repeat(3)
+  const f4 = '`'.repeat(4)
+  const example = `${f4}md\n## Quick start\n\n${f3}sh\nrm -rf /tmp/example\n${f3}\n${f4}\n`
+  const text = `# T\n\n## Quick start\n\n${example}\n${f3}sh\npnpm test\n${f3}\n`
+  assert.deepEqual(quickStartCommands(text), ['pnpm test'])
+})

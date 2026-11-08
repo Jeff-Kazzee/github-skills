@@ -27,7 +27,8 @@ const BROKEN_BADGE = />[^<]*\b(invalid|not found|inaccessible|no status|unknown|
 const SHELL = /^(sh|bash|shell|console)$/i
 const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe'
 
-const withoutCode = text => text.replace(/^```[\s\S]*?^```\s*$/gm, match => match.replace(/[^\n]/g, ''))
+// A fence closes on a line of at least as many backticks, so a four-backtick fence can hold a three-backtick one.
+const withoutCode = text => text.replace(/^(`{3,})(?!`)[\s\S]*?^\1`*[ \t]*$/gm, match => match.replace(/[^\n]/g, ''))
 const withoutComments = text => text.replace(/<!--[\s\S]*?-->/g, '')
 const strip = text => text.replace(/<(?!https?:\/\/)[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 const URL_ONLY = /^<?https?:\/\/\S+>?$/
@@ -102,9 +103,9 @@ function scriptLines(script) {
 export function quickStartScript(text) {
   const section = sections(text).find(s => s.name === 'quick start')
   if (!section) return ''
-  return [...section.body.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```\s*$/gm)]
-    .filter(block => SHELL.test(block[1]))
-    .map(block => scriptLines(block[2]).map(entry => entry.line).join('\n'))
+  return [...section.body.matchAll(/^(`{3,})(?!`)(\w*)[^\n]*\n([\s\S]*?)^\1`*[ \t]*$/gm)]
+    .filter(block => SHELL.test(block[2]))
+    .map(block => scriptLines(block[3]).map(entry => entry.line).join('\n'))
     .join('')
 }
 

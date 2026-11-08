@@ -36,7 +36,8 @@ const CLONE = /^(git clone|gh repo (clone|fork))\b/
 const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe'
 const HEALTH_DIRS = ['', '.github', 'docs']
 
-const withoutCode = text => text.replace(/^```[\s\S]*?^```\s*$/gm, match => match.replace(/[^\n]/g, ''))
+// A fence closes on a line of at least as many backticks, so a four-backtick fence can hold a three-backtick one.
+const withoutCode = text => text.replace(/^(`{3,})(?!`)[\s\S]*?^\1`*[ \t]*$/gm, match => match.replace(/[^\n]/g, ''))
 const withoutComments = text => text.replace(/<!--[\s\S]*?-->/g, '')
 const strip = text => text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
@@ -94,7 +95,7 @@ function heredocOpeners(line) {
   return found
 }
 
-const blocks = body => [...body.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```\s*$/gm)].map(m => ({ lang: m[1], code: m[2] }))
+const blocks = body => [...body.matchAll(/^(`{3,})(?!`)(\w*)[^\n]*\n([\s\S]*?)^\1`*[ \t]*$/gm)].map(m => ({ lang: m[2], code: m[3] }))
 
 // The commands in a section's shell blocks. A continued line belongs to the command that opened it,
 // and so does a heredoc body, kept verbatim because it is data.
