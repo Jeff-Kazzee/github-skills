@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fragmentOf, lintCases, mediaCases, repo, template } from './cases.mjs'
 import { classifyMedia, lintSource, renderedProblems } from './rules.mjs'
@@ -41,6 +41,17 @@ test('the skill template keeps its fields, so a filled copy means something', ()
   assert.ok(template.includes('{{'))
 })
 
+// Every temp folder a test makes, removed once the file is done, even after a failure.
+const made = []
+function tempDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+after(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true })
+})
+
 function cli(script, ...args) {
   return spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' })
 }
@@ -66,7 +77,7 @@ test('the command line runs and refuses, directly and through a link as installe
 
 // With no gh on the PATH and fetch rigged to throw, any network or gh use fails the run.
 function sealed(script, ...args) {
-  const trap = join(mkdtempSync(join(tmpdir(), 'pr-body-seal-')), 'trap.mjs')
+  const trap = join(tempDir('pr-body-seal-'), 'trap.mjs')
   writeFileSync(trap, "globalThis.fetch = () => { throw new Error('network used') }\n")
   return spawnSync(process.execPath, ['--import', `file:///${trap.replace(/\\/g, '/')}`, script, ...args], {
     encoding: 'utf8', env: { PATH: '', SystemRoot: process.env.SystemRoot },
@@ -75,7 +86,7 @@ function sealed(script, ...args) {
 
 const script = fileURLToPath(new URL('./pr-body.mjs', import.meta.url))
 function bodyFile(text) {
-  const file = join(mkdtempSync(join(tmpdir(), 'pr-body-file-')), 'body.md')
+  const file = join(tempDir('pr-body-file-'), 'body.md')
   writeFileSync(file, text)
   return file
 }
@@ -108,7 +119,7 @@ test('rendering happens only when asked, and says it sent the body', () => {
 })
 
 test('attach refuses before any network or git use without upload approval', () => {
-  const image = join(mkdtempSync(join(tmpdir(), 'pr-body-img-')), 'a.png')
+  const image = join(tempDir('pr-body-img-'), 'a.png')
   writeFileSync(image, 'not really an image')
   const refused = sealed(script, 'attach', '--task', 'x', image)
   assert.equal(refused.status, 1)
@@ -170,6 +181,17 @@ test('check --pr fails when GitHub renders sections away that the offline parser
   assert.match(rendered.stderr, /missing section on GitHub: Risk/)
 })
 
+test('check --render passes a body whose rendered sections all appear, and still binds the head', () => {
+  const { body, head } = lintCases['full head in Testing']
+  const file = bodyFile(body)
+  const good = postedCheck(body, h2(ALL), [file, '--head', head, '--render'])
+  assert.equal(good.status, 0, good.stderr)
+  assert.match(good.stdout, new RegExp(`head ${head}`))
+  const stale = postedCheck(body, h2(ALL), [file, '--head', 'b'.repeat(40), '--render'])
+  assert.equal(stale.status, 1, stale.stdout)
+  assert.match(stale.stderr, /does not name the full head/)
+})
+
 // Written by hand in the shape GitHub gives a heading inside a block quote or a list item. Those
 // headings sit inside another block, so they are not sections of the body.
 test('check --pr does not count a nested heading as a section when the real one is swallowed', () => {
@@ -194,4 +216,20 @@ test('check --pr reads headings GitHub wraps in anchors, and catches an order Gi
   assert.equal(postedCheck(body, wrapped).status, 0)
   const swapped = h2(['Why', ...ALL.filter(name => name !== 'Why')])
   assert.match(postedCheck(body, swapped).stderr, /sections out of order on GitHub/)
+})
+
+// Runs the other tests in this file with the temp folder pointed at an empty one, which must stay empty.
+// With NODE_TEST_CONTEXT inherited, the inner run printed no results and made no files, so it is removed.
+test('no test leaves a scratch folder behind', () => {
+  const temp = mkdtempSync(join(tmpdir(), 'pr-body-leak-'))
+  try {
+    const env = { ...process.env, TMPDIR: temp, TEMP: temp, TMP: temp }
+    delete env.NODE_TEST_CONTEXT
+    const run = spawnSync(process.execPath, ['--test', '--test-skip-pattern=leaves a scratch folder', fileURLToPath(import.meta.url)], { encoding: 'utf8', env })
+    assert.equal(run.status, 0, run.stdout)
+    assert.match(run.stdout, /pass [1-9]/)
+    assert.deepEqual(readdirSync(temp), [])
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
 })

@@ -116,6 +116,15 @@ test('--site reaches pages through the .html and root routes it skips', () => {
   assert.deepEqual(problems({ 'README.md': page('Docs', '[Guide](/guide/)'), 'guide/index.md': page('Guide') }, { site: true }), [])
 })
 
+test('a folder link reaches the folder through its SUMMARY.md', () => {
+  assert.deepEqual(problems({ 'README.md': page('Docs', '[Guide](guide/)'), 'guide/SUMMARY.md': page('Guide') }), [])
+})
+
+test('a folder link whose only index differs in case is reported, not passed in silence', () => {
+  const found = problems({ 'README.md': page('Docs', '[Guide](guide/)'), 'guide/Readme.md': page('Guide') })
+  assert.ok(found.includes('README.md:7: broken link guide/: the case differs from the file on disk'), found.join('\n'))
+})
+
 test('a folder with no index page is reported', () => {
   assert.ok(problems({ 'a.md': page('A') }).some(p => p.includes('no index page')))
   assert.deepEqual(problems({ 'start.md': page('Start', '[A](a.md)'), 'a.md': page('A') }, { index: 'start.md' }), [])

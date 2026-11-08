@@ -104,6 +104,8 @@ The check fails on any of these:
 - A relative link or image to a missing file, or a link whose case differs from the
   file. Windows accepts a wrong case. GitHub does not.
 - A link into a folder the check cannot list, because then it cannot compare the case.
+- A link to a folder whose index page (`README.md`, `index.md`, `_index.md`,
+  `index.mdx` or `SUMMARY.md`) exists only in a different case.
 - An anchor that matches no heading, custom `{#id}` or `id` attribute.
 - An orphan: a page that no link path from the index reaches. Pass `--index <page>`
   when the index has another name.

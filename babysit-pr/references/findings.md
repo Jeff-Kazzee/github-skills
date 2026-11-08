@@ -125,7 +125,8 @@ than a day:
 
 - a secret, token or personal data is published, after the credential is revoked,
 - installing or running the code damages a user's files or data,
-- the main path is broken for every user.
+- the main path is broken for a material share of users, such as everyone on one
+  platform, and a revert restores it.
 
 A revert is one commit and one PR. For a merge commit:
 

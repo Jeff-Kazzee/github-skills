@@ -28,6 +28,12 @@ Greptile and Macroscope are the gating review bots in this house setup, set in t
 script's `GATING_BOTS`. CodeRabbit is advisory: the script reports it and never waits for
 it. Change those lists for your own repos.
 
+A gating bot counts as having reviewed the head when its check passes, or when it posts a
+review on the head commit or a summary that names the head. A failed check alone does not
+count, because a failed check can also mean the bot errored. `pr-wait`
+prints one line for that case and keeps waiting. Open the check. If the bot errored,
+rerun it, or switch to `--until green` and review the head yourself.
+
 The script keeps state in `~/.local/state/pr-wait/`. A lock stops a second watcher on the
 same PR. If it says another pid already watches the PR, do not start a second one. Kill
 the old one only when its events do not reach you. The state file lets a restarted
@@ -54,6 +60,12 @@ Every watcher on one GitHub account shares one limit.
 - `gh pr view`, `gh pr checks` and `pr-wait` itself use GraphQL. Check it with
   `gh api rate_limit --jq .resources.graphql`. If `remaining` is near 0, wait for
   `reset` with one background command. Never retry in a tight loop.
+- Each poll reads only the newest 100 review threads. `pr-wait` reads the older pages
+  on its first poll, so their comments are not reported later as new, and again right
+  before it decides `ready`. Between those reads, a reply on an older thread is not an
+  event. With `--until ready` it is reported at the decision, and with `green` or
+  `any-change` it is never reported. Until the decision, the summary line counts
+  unresolved threads in the newest 100 only, and says so.
 - The REST limit is separate. Read a PR with `gh api repos/<owner>/<repo>/pulls/<n>` and
   checks with `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`.
 
