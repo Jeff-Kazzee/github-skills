@@ -312,6 +312,8 @@ def workflow_events(inline: str, following: list[str]) -> set[str]:
         return token.strip().strip("\"'").strip()
 
     def depth(text: str) -> int:
+        # A bracket inside a quoted scalar does not open or close the collection.
+        text = re.sub(r'"(?:[^"\\]|\\.)*"|\'(?:[^\']|\'\')*\'', "", text)
         return sum(text.count(c) for c in "[{") - sum(text.count(c) for c in "]}")
 
     inline = re.sub(r"(?:^|\s)#.*", "", inline).strip()
