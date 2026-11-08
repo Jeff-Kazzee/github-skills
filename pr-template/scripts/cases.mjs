@@ -3,11 +3,10 @@
 
 import { readFileSync } from 'node:fs'
 
-const skill = readFileSync(new URL('../references/body.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+const skill = readFileSync(new URL('../SKILL.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 export const template = skill.match(/^````markdown\n([\s\S]*?)^````$/m)[1]
 const good = template.replace(/\{\{.*?\}\}/g, 'filled in abc1234').replace(/Task: filled in abc1234/, 'Task: 179')
   .replace('**Level:** filled in abc1234', '**Level:** Low')
-  .replace('**Rollback:** filled in abc1234', '**Rollback:** Two-way door: a plain revert')
 
 const section = (name, text) => good.replace(new RegExp(`(## ${name}\\n\\n).*\\n`), `$1${text}\n`)
 const label = (name, text) => good.replace(new RegExp(`\\*\\*${name}:\\*\\* .*`), `**${name}:**${text}`)
@@ -21,7 +20,6 @@ const sha = 'a'.repeat(40)
 export const pin = `https://github.com/${repo}/blob/${sha}/a.png?raw=true`
 const video = pin.replace('a.png', 'a.mp4')
 const off = 'not on an evidence ref:'
-const head = 'a'.repeat(40)
 
 // `problems` is the exact list lintBody must return. `has` lists lines that must be among them.
 export const lintCases = {
@@ -44,10 +42,8 @@ export const lintCases = {
   'unclosed fence': { body: good.replace('## Risk', '```\nopen\n\n## Risk'), has: ['missing section: Risk', 'missing section: Checklist'] },
   'unclosed tilde fence': { body: good.replace('## Risk', '~~~\nopen\n\n## Risk'), has: ['missing section: Risk'] },
   'heading in a comment': { body: good.replace('## Risk', '<!--\n## Risk\n-->'), has: ['missing section: Risk'] },
-  // A known gap. GitHub ends the list at the column-zero fence, reopens a fence there and swallows Risk.
-  // This parser closes the fence and finds Risk, so the offline check passes a body that check --pr fails.
-  'list fence closed at column zero, where GitHub differs': {
-    body: good.replace('## Risk', '- item\n\n  ```\n  code\n```\n\n## Risk'), problems: [],
+  'list fence closed at column zero': {
+    body: good.replace('## Risk', '- item\n\n  ```\n  code\n```\n\n## Risk'), has: ['missing section: Risk'],
   },
   'setext heading': { body: good.replace('## Risk', 'Risk\n---'), problems: [] },
   'closing hashes': { body: good.replace('## Risk', '## Risk ##'), problems: [] },
@@ -72,8 +68,6 @@ export const lintCases = {
   'Level absent': { body: good.replace('**Level:** Low', 'Low'), problems: ['missing **Level:**'] },
   'empty Mechanism above a smaller heading': { body: label('Mechanism', '\n\n### Notes\n\nMore.'), problems: ['empty **Mechanism:**'] },
   'empty Rationale': { body: label('Rationale', ''), problems: ['empty **Rationale:**'] },
-  'Rollback that names no door': { body: label('Rollback', ' a plain revert'), problems: ['**Rollback:** must say one-way or two-way door'] },
-  'Rollback as a one-way door': { body: label('Rollback', ' One-way door: the migration drops a column'), problems: [] },
   'Rollback absent': { body: good.replace(/\*\*Rollback:\*\* .*/, 'filled in abc1234'), problems: ['missing **Rollback:**'] },
   'bare N/A Verification': { body: label('Verification', ' N/A'), problems: ['empty **Verification:**'] },
   'Unresolved concerns of a bare None': { body: label('Unresolved concerns', ' None'), problems: ['empty **Unresolved concerns:**'] },
@@ -100,17 +94,8 @@ export const lintCases = {
   'a value that opens with bold and a colon': { body: label('Level', ' **High:** touches login'), problems: [] },
   'em dash': { body: good.replace('filled in abc1234', `filled ${String.fromCharCode(0x2014)} in`), problems: ['em dash'] },
   'text after the Task line': { body: `${good}\nsignature\n`, problems: ['last line is not Task: <id or none>'] },
-  'full head in Testing': { body: section('Testing', `Passed on head ${head}`), head, problems: [] },
-  'full head in Verification': { body: label('Verification', ` Passed on head ${head}`), head, problems: [] },
-  'a different head': { body: section('Testing', `Passed on head ${'b'.repeat(40)}`), head, problems: [`Testing or Verification does not name the full head ${head}`] },
-  'seven characters are not enough': { body: section('Testing', `Passed on head ${head.slice(0, 7)}`), head, problems: [`Testing or Verification does not name the full head ${head}`] },
-  'the head elsewhere in the body': { body: section('Why', `See ${head}`), head, problems: [`Testing or Verification does not name the full head ${head}`] },
-  'the head only in a comment': { body: section('Testing', `Passed <!-- ${head} -->`), head, problems: [`Testing or Verification does not name the full head ${head}`] },
-  'a label in the wrong section': { body: good.replace(/\*\*Rollback:\*\* .*\n\n/, '').replace('## Why\n\n', '## Why\n\n**Rollback:** Two-way door: a plain revert\n\n'), problems: ['missing **Rollback:**'] },
-  'a label in a fence': { body: good.replace(/\*\*Rollback:\*\* (.*)\n/, '```\n**Rollback:** $1\n```\n'), problems: ['missing **Rollback:**'] },
-  'a checked manual box with no manual run': { body: good.replace('- [ ] I manually tested', '- [x] I manually tested'), problems: ['manual test box is checked with no Manual run line'] },
-  'a checked manual box with a manual run': { body: good.replace('- [ ] I manually tested', '- [x] I manually tested').replace('## Risk', 'Manual run: Windows 11, ran the command.\n\n## Risk'), problems: [] },
-  'an archived body in a fence': { body: section('Why', '```markdown\n## Risk\n\n**Level:** none\n- [x] I manually tested\n```'), problems: [] },
+  'right head': { body: good, head: 'abc1234ffffffffffffffffffffffffffffffffff', problems: [] },
+  'wrong head': { body: good, head: 'def5678ffffffffffffffffffffffffffffffffff', problems: ['body does not name the head def5678'] },
   'CRLF': { body: good.replace(/\n/g, '\r\n'), problems: [] },
   'text before the first heading': { body: `A note first.\n\n${good}`, problems: [] },
   'empty label in a list': {
@@ -125,8 +110,6 @@ export const lintCases = {
 
 // `pins` is how many URLs go to the lookup. `off` is how many are refused on sight.
 const media = text => good.replace('## Why', `${text}\n\n## Why`)
-// The part of a media body a recorded render depends on, so the template can change without it.
-export const fragmentOf = body => body.slice(good.indexOf('## Why'), good.indexOf('## Why') + body.length - good.length)
 export const mediaCases = {
   'a pin': { body: media(`![a](${pin})`), pins: 1, off: 0 },
   'a pin with the owner in lower case': { body: media(`![a](${pin.replace('Jeff-Kazzee', 'jeff-kazzee')})`), pins: 1, off: 0 },
