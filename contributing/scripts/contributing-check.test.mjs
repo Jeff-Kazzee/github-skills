@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
 
 import { commands, findRoot, lint, online, runSetup, sections, setupScript } from './contributing-check.mjs'
@@ -201,4 +202,60 @@ test('online passes when every link resolves and fails on a dead one', async () 
   const text = good().replace('https://github.com/example/lantern/discussions', `${base}/discussions`)
   assert.deepEqual(await online(text), [])
   assert.match((await online(text.replace(`${base}/discussions`, `${base}/gone`))).join(), /HTTP 404/)
+})
+
+test('a heredoc body stays verbatim inside the command that opens it', () => {
+  const body = "server:\n\n# note\n  port: 8080\nEOF"
+  assert.deepEqual(commands("```sh\n$ cat > config.yml <<'EOF'\n" + body + "\npnpm build\n```\n"), ["cat > config.yml <<'EOF'\n" + body, 'pnpm build'])
+})
+
+test('a heredoc writes the indented file the guide shows', () => {
+  const text = good()
+    .replace('echo built > out.txt', "cat > config.yml <<'EOF'\nserver:\n  port: 8080\nEOF")
+    .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml")
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('commands chained after the clone still run', () => {
+  const text = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern && false\n').replace('test -f out.txt', 'true')
+  assert.match(setupScript(text), /^false\n/)
+  assert.match(runSetup(text, repo()).join(), /failed on a fresh clone/)
+})
+
+const pointer = () => `# Contributing to Lantern
+
+Thank you for helping with Lantern. The contributor guide lives at [lantern.dev/contributing](https://lantern.dev/contributing).
+
+Do not report a vulnerability in a public issue. Follow [SECURITY.md](SECURITY.md) instead.
+`
+
+test('a pointer file under 250 words that links the hosted guide passes', () => {
+  assert.deepEqual(lint(pointer(), repoDir()), [])
+})
+
+test('a pointer file must link a hosted guide', () => {
+  assert.match(lint(pointer().replace('[lantern.dev/contributing](https://lantern.dev/contributing)', 'our site'), repoDir()).join('\n'), /hosted guide/)
+})
+
+test('a file with no sections over 250 words is held to the full guide', () => {
+  const text = pointer().replace('Thank you', 'word '.repeat(260) + 'Thank you')
+  assert.match(lint(text, repoDir()).join('\n'), /no "setting up" section/)
+})
+
+test('the command line passes a pointer file and skips the clone', () => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'CONTRIBUTING.md'), pointer())
+  const script = new URL('./contributing-check.mjs', import.meta.url)
+  const run = spawnSync(process.execPath, [fileURLToPath(script), join(dir, 'CONTRIBUTING.md'), '--root', dir, '--clone', 'file:///no/such/repo'], { encoding: 'utf8' })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /^ok: .*pointer/)
+})
+
+test('a GitHub Actions expression is not an unfilled field', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'contrib-'))
+  const text = good().replace('You need Node 22.', 'CI reads `${{ github.token }}`. You need Node 22.')
+  assert.ok(text.includes('${{'))
+  assert.doesNotMatch(lint(text, dir).join('\n'), /unfilled/)
+  assert.match(lint(text.replace('Lantern\n', '{{Project}}\n'), dir).join('\n'), /unfilled/)
+  rmSync(dir, { recursive: true, force: true })
 })

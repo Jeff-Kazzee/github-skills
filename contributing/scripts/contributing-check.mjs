@@ -9,7 +9,7 @@
 // Exits 1 with one line per problem.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +29,7 @@ export const SECTIONS = [
 ]
 const MAX_WORDS = 2500
 const MAX_SETUP_COMMANDS = 8
+const MAX_POINTER_WORDS = 250
 const HYPE = /\b(blazing(ly)?|revolutionary|world-class|seamless(ly)?|powerful|robust|cutting-edge|best-in-class|game-changing|effortless(ly)?|next-generation|stunning|amazing|awesome|delightful|supercharge[sd]?)\b/i
 const SHELL = /^(sh|bash|shell|console|zsh)$/i
 const CLONE = /^(git clone|gh repo (clone|fork))\b/
@@ -61,17 +62,26 @@ export function sections(text) {
 
 const blocks = body => [...body.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```\s*$/gm)].map(m => ({ lang: m[1], code: m[2] }))
 
-// The commands in a section's shell blocks. A continued line belongs to the command that opened it.
+// The commands in a section's shell blocks. A continued line belongs to the command that opened it,
+// and so does a heredoc body, kept verbatim because it is data.
 export function commands(body) {
   const out = []
   let continued = false
   for (const block of blocks(body).filter(b => SHELL.test(b.lang))) {
+    let heredoc = null
     for (const raw of block.code.split('\n')) {
+      if (heredoc) {
+        out[out.length - 1] += `\n${raw}`
+        if ((heredoc.stripTabs ? raw.replace(/^\t+/, '') : raw) === heredoc.tag) heredoc = null
+        continue
+      }
       const line = raw.replace(/^\s*\$ +/, '').trim()
       if (!line || line.startsWith('#')) continue
       if (continued) out[out.length - 1] += `\n${line}`
       else out.push(line)
       continued = line.endsWith('\\')
+      const opener = /(?<!<)<<(-?)\s*(['"]?)([\w.-]+)\2/.exec(line)
+      if (opener) heredoc = { stripTabs: opener[1] === '-', tag: opener[3] }
     }
   }
   return out
@@ -121,17 +131,24 @@ function target(url, dir, root) {
   return clean.startsWith('/') ? join(root, clean) : join(dir, clean)
 }
 
+const wordCount = text => strip(withoutComments(withoutCode(text))).split(' ').filter(Boolean).length
+
+// A pointer file stands in for a guide hosted elsewhere: no ## sections and under 250 words.
+export const isPointer = text => sections(text).length === 0 && wordCount(text) < MAX_POINTER_WORDS
+
 export function lint(text, dir, root = dir) {
   const problems = []
   const plain = withoutComments(withoutCode(text))
 
-  if (text.includes('{{')) problems.push('an unfilled {{field}} remains')
+  if (/(?<!\$)\{\{/.test(text)) problems.push('an unfilled {{field}} remains')
   if (!/^#\s+\S/m.test(plain)) problems.push('no title as an h1')
-  const words = strip(plain).split(' ').filter(Boolean).length
+  const words = wordCount(text)
   if (words > MAX_WORDS) problems.push(`${words} words, the limit is ${MAX_WORDS}. Move detail into docs/ and link it`)
 
   const found = sections(text)
-  for (const spec of SECTIONS.filter(s => s.required)) {
+  const pointer = isPointer(text)
+  if (pointer && !links(text).some(url => /^https?:/i.test(url))) problems.push('the pointer file has no http link to the hosted guide')
+  for (const spec of pointer ? [] : SECTIONS.filter(s => s.required)) {
     const section = found.find(s => s.name === spec.name)
     if (!section) problems.push(`no "${spec.name}" section`)
     else if (!strip(section.body)) problems.push(`the "${spec.name}" section is empty`)
@@ -215,7 +232,15 @@ export function setupScript(text) {
   for (const name of ['setting up', 'running tests']) {
     const section = found.find(s => s.name === name)
     for (const step of section ? commands(section.body) : []) {
-      if (CLONE.test(step)) { skipCd = true; continue }
+      if (CLONE.test(step)) {
+        // A clone chained with && or a semicolon keeps what follows it, minus a cd straight after the clone.
+        const rest = step.replace(/^[^;&|]*(?:&&|;)\s*/, '')
+        if (rest === step) { skipCd = true; continue }
+        const tail = rest.replace(/^cd\s+[^\s;&|]+\s*(?:(?:&&|;)\s*|$)/, '')
+        if (tail) lines.push(tail)
+        skipCd = false
+        continue
+      }
       if (skipCd && /^cd\s+\S+$/.test(step)) { skipCd = false; continue }
       skipCd = false
       lines.push(step)
@@ -254,13 +279,18 @@ async function main() {
   const root = valueOf('--root') ? resolve(valueOf('--root')) : findRoot(dir)
   const problems = lint(text, dir, root)
   if (args.includes('--online')) problems.push(...await online(text))
-  if (valueOf('--clone') && problems.length === 0) problems.push(...runSetup(text, valueOf('--clone')))
+  const pointer = isPointer(text)
+  if (valueOf('--clone') && problems.length === 0 && !pointer) problems.push(...runSetup(text, valueOf('--clone')))
   if (problems.length > 0) {
     console.error(problems.join('\n'))
     process.exit(1)
+  }
+  if (pointer) {
+    console.log(`ok: ${file}, a pointer file, so no setup was run`)
+    return
   }
   const found = sections(text).filter(s => s.name).length
   console.log(`ok: ${file}, ${found} sections, ${commands(sections(text).find(s => s.name === 'setting up').body).length} setup commands`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main()
+if (realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) await main()
