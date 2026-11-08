@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Evidence and format checks for the pr-template skill.
 //
-//   node pr-body.mjs attach --task <id> [--public-ok] <file>...
-//   node pr-body.mjs check <body.md>
+//   node pr-body.mjs attach --task <id> --upload-approved [--public-ok] [--replace] <file>...
+//   node pr-body.mjs check <body.md> [--head <sha>] [--render]
 //   node pr-body.mjs check --pr <number>
 //
-// attach stores files on refs/pr-evidence/<task> and prints Markdown for them.
-// check asks GitHub to render the body and judges the HTML, so what it reads is what a reader
-// sees. It exits 1 with one line per problem.
+// attach pushes files to refs/pr-evidence/<task> and prints Markdown for them. That is an upload, so
+// it needs --upload-approved. check reads the body offline and sends nothing. --render posts the
+// whole body to GitHub to check its images, so use it only with approval to send that text. --pr
+// reads a PR that is already on GitHub. check exits 1 with one line per problem.
 //
 // This file always runs. Installed copies reach it through links, so it holds no "am I the main
 // module" guard. Tests import rules.mjs.
@@ -16,7 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
-import { classifyMedia, fail, lintBody, render, run, SECTIONS, VIDEOS } from './rules.mjs'
+import { classifyMedia, fail, lintSource, render, run, SECTIONS, VIDEOS } from './rules.mjs'
 
 const IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 const MAX_BYTES = 50 * 1024 * 1024
@@ -94,15 +95,20 @@ function attach(args) {
   const files = []
   let task
   let publicOk = false
+  let approved = false
+  let replace = false
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--task') task = args[(i += 1)]
     else if (args[i] === '--public-ok') publicOk = true
+    else if (args[i] === '--upload-approved') approved = true
+    else if (args[i] === '--replace') replace = true
     else if (args[i].startsWith('--')) fail(`unknown option ${args[i]}. A file with that name is ./${args[i]}`)
     else files.push(args[i])
   }
   if (!task || !/^\w[\w-]*$/.test(task) || files.length === 0) {
-    fail('usage: pr-body.mjs attach --task <id> [--public-ok] <file>...')
+    fail('usage: pr-body.mjs attach --task <id> --upload-approved [--public-ok] [--replace] <file>...')
   }
+  if (!approved) fail('attach uploads these files to a persistent ref. Get the approval, then pass --upload-approved.')
   const names = new Map()
   for (const file of files) {
     const ext = extname(file).toLowerCase()
@@ -135,7 +141,10 @@ function attach(args) {
     }
     const add = path => {
       const name = storedName(path)
-      entries.set(name, `100644 blob ${run('git', ['hash-object', '-w', path])}\t${name}`)
+      const blob = run('git', ['hash-object', '-w', path])
+      const held = entries.get(name)?.split(/\s/)[2]
+      if (held && held !== blob && !replace) fail(`${ref} already holds a different ${name}. Rename it, or pass --replace.`)
+      entries.set(name, `100644 blob ${blob}\t${name}`)
       return name
     }
     const items = files.map(file => {
@@ -172,30 +181,36 @@ function attach(args) {
 }
 
 async function check(args) {
-  const usage = 'usage: pr-body.mjs check <body.md> | --pr <number>'
-  const prAt = args.indexOf('--pr')
-  const online = signedIn()
-  const repo = online ? originRepo() : undefined
-  let body
-  let head
-  if (prAt >= 0) {
-    if (!/^\d+$/.test(args[prAt + 1] ?? '')) fail(usage)
+  const usage = 'usage: pr-body.mjs check <body.md> [--head <sha>] [--render] | --pr <number>'
+  const value = flag => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
+  if (args.includes('--pr')) {
+    if (!/^\d+$/.test(value('--pr') ?? '')) fail(usage)
+    const repo = signedIn() ? originRepo() : undefined
     if (!repo) fail('check --pr needs a signed-in gh, inside a checkout whose origin is on GitHub')
-    const pr = JSON.parse(run('gh', ['pr', 'view', args[prAt + 1], '-R', repo, '--json', 'body,headRefOid']))
-    body = pr.body
-    head = pr.headRefOid
-  } else if (args[0]) {
-    if (!existsSync(args[0])) fail(`${args[0]}: no such file`)
-    body = readFileSync(args[0], 'utf8')
-  } else {
-    fail(usage)
+    const pr = JSON.parse(run('gh', ['pr', 'view', value('--pr'), '-R', repo, '--json', 'body,headRefOid']))
+    const body = pr.body.replace(BOM, '')
+    const problems = [...lintSource(body, pr.headRefOid), ...pinProblems(await render(body, repo, true), repo)]
+    if (problems.length > 0) fail(problems.join('\n'))
+    console.log(`ok: ${SECTIONS.length} sections, head ${pr.headRefOid}`)
+    return
   }
-  body = body.replace(BOM, '')
-  if (!repo) console.error('no signed-in gh or GitHub origin here, so the image check was skipped')
-  const html = await render(body, repo, online)
-  const problems = [...lintBody(html, body, head), ...(repo ? pinProblems(html, repo) : [])]
+  const path = args.find((arg, i) => !arg.startsWith('--') && args[i - 1] !== '--head')
+  const head = value('--head')
+  if (!path) fail(usage)
+  if (args.includes('--head') && !/^[0-9a-f]{40}$/.test(head ?? '')) fail('--head needs the full 40-character SHA')
+  if (!existsSync(path)) fail(`${path}: no such file`)
+  const body = readFileSync(path, 'utf8').replace(BOM, '')
+  const problems = lintSource(body, head)
+  if (args.includes('--render')) {
+    const online = signedIn()
+    const repo = online ? originRepo() : undefined
+    if (!repo) console.error('no signed-in gh or GitHub origin here, so the image check was skipped')
+    console.error('sent the whole body to api.github.com to render it')
+    const html = await render(body, repo, online)
+    if (repo) problems.push(...pinProblems(html, repo))
+  }
   if (problems.length > 0) fail(problems.join('\n'))
-  console.log(`ok: ${SECTIONS.length} sections${head ? `, head ${head.slice(0, 7)}` : ''}`)
+  console.log(`ok: ${SECTIONS.length} sections${head ? `, head ${head}` : ', head not bound'}${args.includes('--render') ? '' : ', images not checked'}`)
 }
 
 const [command, ...args] = process.argv.slice(2)
