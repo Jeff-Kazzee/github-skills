@@ -309,7 +309,17 @@ def workflow_events(inline: str, following: list[str]) -> set[str]:
     def clean(token: str) -> str:
         return token.strip().strip("\"'").strip()
 
+    def depth(text: str) -> int:
+        return sum(text.count(c) for c in "[{") - sum(text.count(c) for c in "]}")
+
     inline = re.sub(r"(?:^|\s)#.*", "", inline).strip()
+    # A flow list or mapping can span lines. Read on until its brackets close.
+    rest = iter(following)
+    while inline.startswith(("[", "{")) and depth(inline) > 0:
+        more = next(rest, None)
+        if more is None:
+            break
+        inline += " " + re.sub(r"(?:^|\s)#.*", "", more).strip()
     if inline:
         if inline.startswith("{"):
             # A flow mapping: the event names are its top-level keys.
@@ -412,13 +422,16 @@ class Watcher:
             self.printed.add(line)
             print(f"#{self.pr} {line}", flush=True)
 
-    def emit(self, key: str, line: str) -> None:
-        """Print an event once per PR, across restarts."""
+    def emit(self, key: str, line: str, on_baseline: bool = False) -> None:
+        """Print an event once per PR, across restarts. The baseline poll prints only
+        a line marked on_baseline: a state that blocks ready and would stay silent."""
         if key in self.reported:
             return
         self.reported.add(key)
         if not self.baseline:
             self.events += 1
+            self.say(line)
+        elif on_baseline:
             self.say(line)
 
     def finish(self, code: int, lines: Sequence[str] = ()) -> NoReturn:
@@ -615,6 +628,7 @@ class Watcher:
                     f"botfail:{bot}:{head}",
                     f"{bot} check failed on {short} with no review or summary of the head, "
                     f"so it may have errored: {', '.join(failed)} {links}",
+                    on_baseline=True,
                 )
             key = f"bot:{bot}:{head}"
             was_done = key in self.reported

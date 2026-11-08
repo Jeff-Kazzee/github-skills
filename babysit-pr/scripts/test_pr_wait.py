@@ -352,6 +352,12 @@ class FailedBotCheck(unittest.TestCase):
         self.assertIn("https://ci.example/Greptile Review", hits[0])
         self.assertFalse(any("greptile finished" in line for line in run.lines), run.lines)
 
+    def test_failed_greptile_check_already_on_the_first_poll_still_prints_its_line(self):
+        fake = FakeGitHub(checks=[check("build", "pass"), check("Greptile Review", "fail")], max_polls=5)
+        run = watch(fake)
+        hits = [line for line in run.lines if "greptile check failed on abc1234 with no review" in line]
+        self.assertEqual(len(hits), 1, run.lines)
+
     def test_failed_greptile_check_with_a_review_on_the_head_is_a_review(self):
         fake = FakeGitHub(
             checks=[check("build", "pass"), check("Greptile Review", "fail")],
@@ -533,6 +539,15 @@ class LateCiChecks(unittest.TestCase):
             "on: {schedule: [{cron: '0 3 * * *'}]}\n",
         ):
             self.assertFalse(pr_wait.triggers_on_pr(text), text)
+
+    def test_flow_triggers_that_span_lines_count(self):
+        for text in (
+            "on: [workflow_dispatch,\n  pull_request]\njobs: {}\n",
+            "on: [\n  push,  # every branch\n  workflow_dispatch\n]\njobs: {}\n",
+            "on: {workflow_dispatch: {},\n  pull_request: {branches: [dev]}}\njobs: {}\n",
+        ):
+            self.assertTrue(pr_wait.triggers_on_pr(text), text)
+        self.assertFalse(pr_wait.triggers_on_pr("on: [workflow_dispatch,\n  schedule]\njobs:\n  a:\n    if: github.event_name == 'push'\n"))
 
     def test_event_words_inside_inputs_do_not_count(self):
         for text in (
