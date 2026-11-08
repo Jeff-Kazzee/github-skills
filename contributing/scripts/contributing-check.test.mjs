@@ -562,3 +562,17 @@ test('a folder anchor on a folder that can be listed but not entered is reported
   try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
 })
+
+test('a guarded cd into the clone is dropped with its guard', () => {
+  const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern || exit 1\n')
+  assert.equal(setupScript(chained), 'echo built > out.txt\ntest -f out.txt')
+  const alone = good().replace('cd lantern\n', 'cd lantern || exit 1\n')
+  assert.equal(setupScript(alone), 'echo built > out.txt\ntest -f out.txt')
+})
+
+test('a guarded cd below the clone keeps its guard', () => {
+  const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern/packages || exit 1\n')
+  assert.equal(setupScript(chained), 'cd packages || exit 1\necho built > out.txt\ntest -f out.txt')
+  const alone = good().replace('cd lantern\n', 'cd lantern/packages || exit 1\n')
+  assert.equal(setupScript(alone), 'cd packages || exit 1\necho built > out.txt\ntest -f out.txt')
+})
