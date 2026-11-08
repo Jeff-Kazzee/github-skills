@@ -1,6 +1,6 @@
 # GitHub skills
 
-Ten agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
+Eleven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
 
 | Skill | What it does |
 |---|---|
@@ -14,6 +14,7 @@ Ten agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude
 | [`review-comments`](review-comments/SKILL.md) | Writes a reviewer's inline comments, suggested changes and review summary, each labeled and actionable |
 | [`discussions`](discussions/SKILL.md) | Writes Discussions announcements, proposals, questions, answers and category forms |
 | [`repo-docs`](repo-docs/SKILL.md) | Lays out a docs folder or wiki, writes each page from its type's template, and checks links and freshness |
+| [`repo-standards`](repo-standards/SKILL.md) | Audits a repo against these skills and installs the templates, forms and blocking CI check that enforce them |
 
 ## Install
 
@@ -26,7 +27,7 @@ cp -r github-skills/pr-template ~/.claude/skills/
 
 ## Tests
 
-`contributing`, `discussions`, `pr-template`, `readme`, `repo-docs`, `review-comments` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
+`contributing`, `discussions`, `pr-template`, `readme`, `repo-docs`, `repo-standards`, `review-comments` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
 
 ```sh
 node --test contributing/scripts/contributing-check.test.mjs \
@@ -35,6 +36,7 @@ node --test contributing/scripts/contributing-check.test.mjs \
   readme/scripts/image-check.test.mjs \
   readme/scripts/readme-check.test.mjs \
   repo-docs/scripts/docs-check.test.mjs \
+  repo-standards/scripts/repo-check.test.mjs \
   review-comments/scripts/review-lint.test.mjs \
   review-gate/scripts/risk-floor.test.mjs
 ```
