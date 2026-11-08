@@ -7,7 +7,7 @@ Five agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claud
 | [`commit`](commit/SKILL.md) | Writes commits and merge messages with one logical change, a subject that stands alone, a body that says why, and trailers |
 | [`pr-template`](pr-template/SKILL.md) | Writes every pull request in one format: ELI5, before and after, proof, testing, risk and a checklist, with evidence attached |
 | [`review-gate`](review-gate/SKILL.md) | Sets a pull request's risk level from its diff and says how much review it needs |
-| [`issues-and-releases`](issues-and-releases/SKILL.md) | Files issues a maintainer can act on and cuts releases people can trust |
+| [`issues-and-releases`](issues-and-releases/SKILL.md) | Files issues a maintainer can act on, writes issue comments, and cuts releases people can trust |
 | [`readme`](readme/SKILL.md) | Writes or rewrites a repository README that shows the project on its first screen and proves every claim |
 
 ## Install
