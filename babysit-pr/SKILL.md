@@ -116,8 +116,8 @@ other thread has its decline, question or defer reply.
    The GraphQL `requestReviews` mutation replaces the reviewer set unless you pass
    `union: true`.
 
-Done when only declined or questioned threads stay open, the summary posted, and the
-reviewers have a fresh request.
+Done when only questioned threads stay open, every decline Jeff said yes to is
+resolved, the summary posted, and the reviewers have a fresh request.
 
 ## 6. Wait
 
@@ -137,11 +137,13 @@ without a message. The first time you watch a PR in a session, read
 [references/watching.md](references/watching.md) for the `--until` modes, monitors, T3
 Code and rate limits.
 
-If it exits 1 only on unresolved threads, and each one already has your posted decline
-or question, the PR waits on the reviewer. Report that in step 8 and do not restart it.
+If it exits 1 only on unresolved threads, check each one. A decline with posted evidence
+waits on Jeff, not the reviewer: tell Jeff what the finding claimed and why it does not
+hold, and resolve it when he says yes. A posted question waits on the reviewer. Report
+those in step 8 and do not restart `pr-wait` for them.
 
 Done when `pr-wait` exits 0, exits 1 with an event you handle from step 1, or exits 1
-only on threads that wait on the reviewer.
+only on questions that wait on the reviewer.
 
 ## 7. Post only approved text
 

@@ -83,7 +83,8 @@ Reply in each thread with [reply-templates.md](reply-templates.md):
 
 - Fixed: the commit SHA and the test name that proves it.
 - Not reproduced: the command and output, and a question asking the reviewer whether
-  you misread the claim.
+  you misread the claim. The thread still resolves under the rule below. An answer
+  reopens the finding only when it brings new evidence.
 - Deferred: only with Jeff's yes, and only with an issue link in the reply. A deferred
   finding counts as open until Jeff approves the deferral.
 
@@ -92,7 +93,8 @@ has approved its deferral and the issue is filed. Resolve a not-reproduced threa
 its evidence is posted, you have told Jeff what the finding claimed and why it does not
 hold, and he says yes (Jeff, 2026-11-08). A reviewer can be wrong, and a merge must not
 wait forever on one, so this resolved thread does not block section 6. If the reviewer
-answers with new evidence, start again at section 2. Post replies only after Jeff approves the text, as step 7 of the skill says.
+answers with new evidence, start again at section 2. Post replies only after Jeff
+approves the text, as step 7 of the skill says.
 
 A finding with no thread, such as one in a review summary, gets one PR comment that
 lists each such finding with its outcome and fix commit. GitHub cannot resolve it, so
