@@ -27,21 +27,14 @@ cp -r github-skills/pr-template ~/.claude/skills/
 
 ## Tests
 
-`contributing`, `discussions`, `pr-template`, `readme`, `repo-docs`, `repo-standards`, `review-comments` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
+Every skill with a script ships tests. The `ci` workflow runs them on Linux and Windows for each pull request. Run them from the repo root:
 
 ```sh
-node --test contributing/scripts/contributing-check.test.mjs \
-  discussions/scripts/discussion-check.test.mjs \
-  pr-template/scripts/pr-body.test.mjs \
-  readme/scripts/image-check.test.mjs \
-  readme/scripts/readme-check.test.mjs \
-  repo-docs/scripts/docs-check.test.mjs \
-  repo-standards/scripts/repo-check.test.mjs \
-  review-comments/scripts/review-lint.test.mjs \
-  review-gate/scripts/risk-floor.test.mjs
+node --test */scripts/*.test.mjs
+(cd babysit-pr/scripts && python -m unittest)
 ```
 
-`babysit-pr` ships `pr-wait`, a Python watcher with no test suite. Check it compiles with `python -m py_compile babysit-pr/scripts/pr-wait babysit-pr/scripts/pr-wait-win.py`.
+CI uses Node 24 and Python 3.13. The `pr-wait` tests stub every `gh` call, so they never call GitHub.
 
 ## Notes
 
