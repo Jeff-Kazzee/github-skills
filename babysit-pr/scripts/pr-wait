@@ -440,10 +440,9 @@ class Watcher:
         if key in self.reported:
             return
         self.reported.add(key)
-        if not self.baseline:
+        if not self.baseline or on_baseline:
+            # A printed line is an event, so --until any-change stops on it, first poll or not.
             self.events += 1
-            self.say(line)
-        elif on_baseline:
             self.say(line)
 
     def finish(self, code: int, lines: Sequence[str] = ()) -> NoReturn:

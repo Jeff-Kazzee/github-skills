@@ -363,6 +363,13 @@ class FailedBotCheck(unittest.TestCase):
         hits = [line for line in run.lines if "greptile check failed on abc1234 with no review" in line]
         self.assertEqual(len(hits), 1, run.lines)
 
+    def test_failed_greptile_check_on_the_first_poll_ends_an_any_change_watch(self):
+        # The first event prints and ends --until any-change, even when it is on the first poll.
+        fake = FakeGitHub(checks=[check("build", "pass"), check("Greptile Review", "fail")], max_polls=5)
+        run = watch(fake, until="any-change")
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertTrue(any("greptile check failed on abc1234 with no review" in line for line in run.lines), run.lines)
+
     def test_failed_greptile_check_with_a_review_on_the_head_is_a_review(self):
         fake = FakeGitHub(
             checks=[check("build", "pass"), check("Greptile Review", "fail")],
