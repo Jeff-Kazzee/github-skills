@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
@@ -52,6 +52,34 @@ test('a link whose case differs from the file fails, as it would on GitHub', () 
   assert.ok(found.includes('README.md:7: broken link Guide.md: the case differs from the file on disk'), found.join('\n'))
   const folder = problems({ 'README.md': page('Docs', '[Guide](How-To/guide.md)'), 'how-to/guide.md': page('Guide') })
   assert.ok(folder.includes('README.md:7: broken link How-To/guide.md: the case differs from the file on disk'), folder.join('\n'))
+})
+
+// Takes away the right to list a folder. Returns false where the OS or user can still list it.
+function lock(t, dir) {
+  chmodSync(dir, 0o311)
+  t.after(() => chmodSync(dir, 0o755))
+  try { readdirSync(dir) } catch { return true }
+  return false
+}
+
+test('a link through a file, as if it were a folder, is a broken link', () => {
+  assert.deepEqual(problems({ 'README.md': page('Docs', '[Guide](guide.md) [x](guide.md/extra)'), 'guide.md': page('Guide') }), ['README.md:7: broken link guide.md/extra'])
+})
+
+test('a link into a folder that cannot be listed is reported, because its case cannot be checked', t => {
+  const root = tree({ 'README.md': page('Docs', '![Logo](.assets/logo.png)'), '.assets/logo.png': 'png' })
+  if (!lock(t, join(root, '.assets'))) return t.skip('this OS or user can still list a folder after chmod 311')
+  assert.deepEqual(checkTree(root).problems, ['README.md:7: cannot check .assets/logo.png: the folder .assets cannot be listed to compare the case'])
+})
+
+test('a folder above the docs root that cannot be listed does not fail the links', t => {
+  const outer = mkdtempSync(join(tmpdir(), 'docs-check-outer-'))
+  made.push(outer)
+  mkdirSync(join(outer, 'docs'))
+  writeFileSync(join(outer, 'docs', 'README.md'), page('Docs', '[Guide](guide.md)'))
+  writeFileSync(join(outer, 'docs', 'guide.md'), page('Guide'))
+  if (!lock(t, outer)) return t.skip('this OS or user can still list a folder after chmod 311')
+  assert.deepEqual(checkTree(join(outer, 'docs')).problems, [])
 })
 
 test('anchors follow GitHub slugs, repeats and custom ids', () => {
