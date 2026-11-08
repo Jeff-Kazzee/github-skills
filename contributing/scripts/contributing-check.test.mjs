@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
 
 import { commands, findRoot, lint, online, runSetup, sections, setupScript } from './contributing-check.mjs'
@@ -201,4 +202,384 @@ test('online passes when every link resolves and fails on a dead one', async () 
   const text = good().replace('https://github.com/example/lantern/discussions', `${base}/discussions`)
   assert.deepEqual(await online(text), [])
   assert.match((await online(text.replace(`${base}/discussions`, `${base}/gone`))).join(), /HTTP 404/)
+})
+
+test('a heredoc body stays verbatim inside the command that opens it', () => {
+  const body = "server:\n\n# note\n  port: 8080\nEOF"
+  assert.deepEqual(commands("```sh\n$ cat > config.yml <<'EOF'\n" + body + "\npnpm build\n```\n"), ["cat > config.yml <<'EOF'\n" + body, 'pnpm build'])
+})
+
+test('a heredoc writes the indented file the guide shows', () => {
+  const text = good()
+    .replace('echo built > out.txt', "cat > config.yml <<'EOF'\nserver:\n  port: 8080\nEOF")
+    .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml")
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('commands chained after the clone still run', () => {
+  const text = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern && false\n').replace('test -f out.txt', 'true')
+  assert.match(setupScript(text), /^false\n/)
+  assert.match(runSetup(text, repo()).join(), /failed on a fresh clone/)
+})
+
+const pointer = () => `# Contributing to Lantern
+
+Thank you for helping with Lantern. The contributor guide lives at [lantern.dev/contributing](https://lantern.dev/contributing).
+
+Do not report a vulnerability in a public issue. Follow [SECURITY.md](SECURITY.md) instead.
+`
+
+test('a pointer file under 250 words that links the hosted guide passes', () => {
+  assert.deepEqual(lint(pointer(), repoDir()), [])
+})
+
+test('a pointer file must link a hosted guide', () => {
+  assert.match(lint(pointer().replace('[lantern.dev/contributing](https://lantern.dev/contributing)', 'our site'), repoDir()).join('\n'), /hosted guide/)
+})
+
+test('a file with no sections over 250 words is held to the full guide', () => {
+  const text = pointer().replace('Thank you', 'word '.repeat(260) + 'Thank you')
+  assert.match(lint(text, repoDir()).join('\n'), /no "setting up" section/)
+})
+
+test('the command line passes a pointer file and skips the clone', () => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'CONTRIBUTING.md'), pointer())
+  const script = new URL('./contributing-check.mjs', import.meta.url)
+  const run = spawnSync(process.execPath, [fileURLToPath(script), join(dir, 'CONTRIBUTING.md'), '--root', dir, '--clone', 'file:///no/such/repo'], { encoding: 'utf8' })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /^ok: .*pointer/)
+})
+
+test('a GitHub Actions expression is not an unfilled field', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'contrib-'))
+  const text = good().replace('You need Node 22.', 'CI reads `${{ github.token }}`. You need Node 22.')
+  assert.ok(text.includes('${{'))
+  assert.doesNotMatch(lint(text, dir).join('\n'), /unfilled/)
+  assert.match(lint(text.replace('Lantern\n', '{{Project}}\n'), dir).join('\n'), /unfilled/)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a clone wrapped with line continuations still drops its cd', () => {
+  const nl = String.fromCharCode(10)
+  const cont = String.fromCharCode(92) + nl
+  const wrapped = `git clone https://github.com/example/lantern.git ${cont}  && cd lantern ${cont}  && echo built > out.txt${nl}`
+  const text = good().replace(`git clone https://github.com/example/lantern.git${nl}cd lantern${nl}`, wrapped)
+  assert.ok(text.includes(wrapped))
+  assert.doesNotMatch(setupScript(text), /cd lantern/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a clone line that ends with && still drops the cd on the next line', () => {
+  const nl = String.fromCharCode(10)
+  const text = good().replace(`git clone https://github.com/example/lantern.git${nl}cd lantern${nl}`, `git clone https://github.com/example/lantern.git &&${nl}cd lantern${nl}`)
+  assert.ok(text.includes(`lantern.git &&${nl}cd lantern`))
+  assert.doesNotMatch(setupScript(text), /cd lantern/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a << inside quotes, a comment or arithmetic opens no heredoc', () => {
+  for (const line of ['echo "use <<EOF to start one"', "echo 'a <<EOF b'", 'pnpm build # not a <<EOF', 'echo $((1 << 2))', 'cat <<<word', 'echo "$((1 << 2))"', 'echo "$(date) <<EOF"', 'echo "$(echo \'<<EOF\')"']) {
+    assert.deepEqual(commands('```sh\n' + line + '\npnpm test\n```\n'), [line, 'pnpm test'], line)
+  }
+})
+
+test('real heredoc forms still open a heredoc', () => {
+  for (const [line, end] of [['cat > f <<EOF', 'EOF'], ['cat > f << "EOF"', 'EOF'], ['cat <<-EOF > f', '\tEOF'], ['cat > "my file.txt" <<\'END\'', 'END']]) {
+    assert.deepEqual(commands('```sh\n' + line + '\nbody; more\n' + end + '\npnpm test\n```\n'), [line + '\nbody; more\n' + end, 'pnpm test'], line)
+  }
+})
+
+test('a << in a comment on the clone line does not hide later setup commands', () => {
+  const text = good()
+    .replace('lantern.git\n', 'lantern.git # see <<EOF\n')
+    .replace('echo built > out.txt', 'false')
+    .replace('test -f out.txt', 'true')
+  assert.equal(setupScript(text), 'false\ntrue')
+  assert.match(runSetup(text, repo()).join(), /failed on a fresh clone/)
+})
+
+test('a cd into the clone later in the chain is dropped, and the rest keeps its order', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  for (const [shape, script] of [
+    ['git clone https://github.com/example/lantern.git && echo preparing && cd lantern\n', 'echo preparing\necho built > out.txt\ntest -f out.txt'],
+    ['git clone https://github.com/example/lantern.git && echo preparing && cd lantern && echo built > out.txt\necho again\n', 'echo preparing && echo built > out.txt\necho again\necho built > out.txt\ntest -f out.txt'],
+    ['git clone https://github.com/example/lantern.git && echo preparing\ncd lantern\n', 'echo preparing\necho built > out.txt\ntest -f out.txt'],
+  ]) {
+    const text = good().replace(clone, shape)
+    assert.ok(text.includes(shape))
+    assert.equal(setupScript(text), script, shape)
+    assert.deepEqual(runSetup(text, repo()), [], shape)
+  }
+})
+
+test('a gh repo clone drops the clone and the cd into it', () => {
+  const text = good().replace('git clone https://github.com/example/lantern.git', 'gh repo clone example/lantern')
+  assert.ok(text.includes('gh repo clone example/lantern\ncd lantern'))
+  assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+const cli = (text, source) => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'CONTRIBUTING.md'), text)
+  const script = fileURLToPath(new URL('./contributing-check.mjs', import.meta.url))
+  return spawnSync(process.execPath, [script, join(dir, 'CONTRIBUTING.md'), '--root', dir, '--clone', source], { encoding: 'utf8' })
+}
+
+test('with --clone, a pointer file runs its commands on a fresh clone', () => {
+  const block = cmd => pointer() + '\n```sh\ngit clone https://github.com/example/lantern.git\ncd lantern\n' + cmd + '\n```\n'
+  const failing = cli(block('test -f only-on-my-laptop.txt'), repo())
+  assert.equal(failing.status, 1, failing.stdout)
+  assert.match(failing.stderr, /failed on a fresh clone/)
+  const passing = cli(block('test -f package.txt'), repo())
+  assert.equal(passing.status, 0, passing.stderr)
+  assert.match(passing.stdout, /^ok: .*pointer file, and its commands ran on a fresh clone/)
+})
+
+test('only the cd into the clone is dropped from the chain', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const twice = good().replace(clone, 'git clone https://github.com/example/lantern.git && cd lantern && mkdir sub && cd sub && cd ..\n')
+  assert.equal(setupScript(twice), 'mkdir sub && cd sub && cd ..\necho built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(twice, repo()), [])
+  const other = good().replace(clone, 'git clone --depth 1 https://github.com/example/lantern.git && mkdir build && cd build\n')
+  assert.equal(setupScript(other), 'mkdir build && cd build\necho built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(other, repo()), [])
+  const named = good().replace(clone, 'git clone https://github.com/example/lantern.git work && cd work/ && echo built > out.txt\n')
+  assert.equal(setupScript(named), 'echo built > out.txt\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a cd below the clone keeps the part under it', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const deep = good().replace(clone, 'git clone https://github.com/example/lantern.git && cd lantern/packages/core && pnpm test\n')
+  assert.equal(setupScript(deep), 'cd packages/core && pnpm test\necho built > out.txt\ntest -f out.txt')
+  const dotted = good().replace(clone, 'git clone https://github.com/example/lantern.git && cd ./lantern/\n')
+  assert.equal(setupScript(dotted), 'echo built > out.txt\ntest -f out.txt')
+})
+
+test('a quoted cd into the clone is dropped', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  for (const shape of [
+    'git clone https://github.com/example/lantern.git && cd "lantern" && test -f package.txt\n',
+    "git clone https://github.com/example/lantern.git && cd 'lantern' && test -f package.txt\n",
+    'git clone https://github.com/example/lantern.git "work" && cd "work" && test -f package.txt\n',
+  ]) {
+    const text = good().replace(clone, () => shape)
+    assert.ok(text.includes(shape))
+    assert.equal(setupScript(text), 'test -f package.txt\necho built > out.txt\ntest -f out.txt', shape)
+    assert.deepEqual(runSetup(text, repo()), [], shape)
+  }
+})
+
+test('a quoted cd below the clone keeps the quoted part under it', () => {
+  const source = repo()
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { cwd: source, stdio: 'pipe' })
+  for (const sub of ['sub', 'my sub']) {
+    mkdirSync(join(source, sub))
+    writeFileSync(join(source, sub, 'marker.txt'), 'x')
+  }
+  git('add', '.')
+  git('commit', '-qm', 'two')
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  for (const [cd, kept] of [['cd "lantern/sub"', 'cd "sub"'], ["cd 'lantern/my sub'", "cd 'my sub'"]]) {
+    const text = good().replace(clone, () => `git clone https://github.com/example/lantern.git && ${cd} && test -f marker.txt\n`)
+    assert.equal(setupScript(text), `${kept} && test -f marker.txt\necho built > out.txt\ntest -f out.txt`, cd)
+    assert.deepEqual(runSetup(text, source), [], cd)
+  }
+})
+
+test('a heredoc inside a quoted command substitution keeps its body', () => {
+  const body = "  port: 8080\n# keep\nEOF"
+  assert.equal(commands("```sh\nvalue=\"$(cat <<'EOF'\n" + body + "\n)\"\n```\n")[0], "value=\"$(cat <<'EOF'\n" + body)
+  assert.equal(commands('```sh\nvalue="prefix $(cat <<-END\n\t  indented\n\tEND\n)"\n```\n')[0], 'value="prefix $(cat <<-END\n\t  indented\n\tEND')
+})
+
+test('a heredoc inside a quoted command substitution writes the file the guide shows', () => {
+  const text = good()
+    .replace('echo built > out.txt', () => "value=\"$(cat <<'EOF'\n  port: 8080\n# keep\nEOF\n)\"\necho \"$value\" > config.yml")
+    .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml && grep -q '^# keep$' config.yml")
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a quoted heredoc delimiter with spaces keeps its body verbatim', () => {
+  const body = "a:\n\n  # keep\n  b: 1\nEND OF CONFIG"
+  assert.deepEqual(commands("```sh\ncat <<'END OF CONFIG' > c.yml\n" + body + "\npnpm build\n```\n"), ["cat <<'END OF CONFIG' > c.yml\n" + body, 'pnpm build'])
+})
+
+test('every heredoc a line opens keeps its body verbatim', () => {
+  const bodies = "one\nA\nx:\n\n  # keep\n  y: 1\nB"
+  assert.deepEqual(commands('```sh\ncat <<A > a.txt; cat <<B > b.yml\n' + bodies + '\npnpm build\n```\n'), ['cat <<A > a.txt; cat <<B > b.yml\n' + bodies, 'pnpm build'])
+})
+
+test('the value of a clone option is not the clone folder', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone --branch build https://github.com/example/lantern.git && mkdir build && cd build\n')
+  assert.equal(setupScript(text), 'mkdir build && cd build\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a quoted clone folder with a space is one name', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git "my checkout" && cd "my checkout" && test -f package.txt\n')
+  assert.equal(setupScript(text), 'test -f package.txt\necho built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a heredoc after a clone chain keeps its backslash lines', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good()
+    .replace(clone, () => "git clone https://github.com/example/lantern.git && cd lantern && cat <<'EOF' > run.sh\necho a \\\n  b\nEOF\n")
+    .replace('test -f out.txt', () => "grep -qxF 'echo a \\' run.sh")
+  assert.match(setupScript(text), /^cat <<'EOF' > run\.sh\necho a \\\n {2}b\nEOF\n/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a comment on the clone line is not a command', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  const text = good().replace(clone, 'git clone https://github.com/example/lantern.git # first clone; then install dependencies\ncd lantern\n')
+  assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt')
+  assert.deepEqual(runSetup(text, repo()), [])
+})
+
+test('a cd below a standalone clone keeps the part under it', () => {
+  const text = good().replace('cd lantern\n', 'cd lantern/packages/core\n')
+  assert.equal(setupScript(text), 'cd packages/core\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a four-backtick fence hides the headings and sh blocks it shows as an example', () => {
+  const f3 = '`'.repeat(3)
+  const f4 = '`'.repeat(4)
+  const example = `${f4}md\n## Running tests\n\n${f3}sh\nrm -rf /tmp/example\n${f3}\n${f4}\n`
+  assert.deepEqual(sections(`# T\n\n## Real\n\n${example}`).map(s => s.heading), ['Real'])
+  assert.deepEqual(commands(`${example}\n${f3}sh\npnpm test\n${f3}\n`), ['pnpm test'])
+})
+
+test('a cd into a standalone clone by another path is still dropped whole', () => {
+  for (const [clone, cd] of [
+    ['git clone https://github.com/example/lantern.git ~/src/lantern', 'cd ~/src/lantern'],
+    ['git clone https://github.com/example/lantern.git $GOPATH/src/github.com/example/lantern', 'cd $GOPATH/src/github.com/example/lantern'],
+  ]) {
+    const text = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', () => `${clone}\n${cd}\n`)
+    assert.equal(setupScript(text), 'echo built > out.txt\ntest -f out.txt', cd)
+    assert.deepEqual(runSetup(text, repo()), [], cd)
+  }
+})
+
+test('an anchor on a folder with no README is reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'page.txt'), 'x')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing: the folder has no README to hold it'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/'), dir), [])
+})
+
+test('an anchor on a folder lands in its README, in any case', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#uninstall'), dir).includes('broken anchor guide/#uninstall'))
+})
+
+test('an anchor on a folder whose README is not Markdown is not reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('an anchor on a folder that cannot be listed is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o311)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: the folder cannot be listed'))
+})
+
+test('a folder anchor uses the Markdown README when another README sits beside it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  mkdirSync(join(dir, 'guide', 'README.adoc'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing'))
+})
+
+test('a folder anchor whose README is a dangling symlink is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('gone.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('broken anchor guide/#install: the folder has no README to hold it'))
+})
+
+test('a malformed fragment in a folder or file link is a broken anchor, not a throw', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#%E0%A4%A'), dir).includes('broken anchor guide/#%E0%A4%A'))
+  assert.ok(lint(good().replace('docs/style.md#naming', 'docs/style.md#%E0%A4%A'), dir).includes('broken anchor docs/style.md#%E0%A4%A'))
+})
+
+test('a folder anchor passes when any Markdown README in the folder holds it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.markdown'), '# Guide\n')
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('a folder anchor whose README is a symlink loop is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('README.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
+})
+
+test('a folder anchor whose README cannot be read is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide', 'README.md'), 0o000)
+  t.after(() => chmodSync(join(dir, 'guide', 'README.md'), 0o644))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still read a file after chmod 000') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: EACCES'))
+})
+
+test('a folder anchor on a folder that can be listed but not entered is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o644)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
+})
+
+test('a guarded cd into the clone is dropped with its guard', () => {
+  const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern || exit 1\n')
+  assert.equal(setupScript(chained), 'echo built > out.txt\ntest -f out.txt')
+  const alone = good().replace('cd lantern\n', 'cd lantern || exit 1\n')
+  assert.equal(setupScript(alone), 'echo built > out.txt\ntest -f out.txt')
+})
+
+test('a guarded cd below the clone keeps its guard', () => {
+  const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', 'git clone https://github.com/example/lantern.git && cd lantern/packages || exit 1\n')
+  assert.equal(setupScript(chained), 'cd packages || exit 1\necho built > out.txt\ntest -f out.txt')
+  const alone = good().replace('cd lantern\n', 'cd lantern/packages || exit 1\n')
+  assert.equal(setupScript(alone), 'cd packages || exit 1\necho built > out.txt\ntest -f out.txt')
+})
+
+test('a cd guard with a pipe, a redirect or a group is left whole, as before', () => {
+  for (const guard of ['|| echo "cd failed" >&2', '|| echo failed | cat', '|| { echo failed; exit 1; }']) {
+    const chained = good().replace('git clone https://github.com/example/lantern.git\ncd lantern\n', `git clone https://github.com/example/lantern.git && cd lantern ${guard}\n`)
+    assert.equal(setupScript(chained), `cd lantern ${guard}\necho built > out.txt\ntest -f out.txt`, guard)
+  }
 })

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { after, test } from 'node:test'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fragmentOf, lintCases, mediaCases, repo, template } from './cases.mjs'
-import { classifyMedia, lintSource } from './rules.mjs'
+import { classifyMedia, lintSource, renderedProblems } from './rules.mjs'
 
 const golden = JSON.parse(readFileSync(new URL('./golden.json', import.meta.url), 'utf8'))
 
@@ -33,8 +33,23 @@ for (const [name, { body, pins, off, names }] of Object.entries(mediaCases)) {
   })
 }
 
+test('every recorded GitHub render of the filled template shows all sections in order', () => {
+  for (const [name, { html }] of Object.entries(golden)) assert.deepEqual(renderedProblems(html), [], name)
+})
+
 test('the skill template keeps its fields, so a filled copy means something', () => {
   assert.ok(template.includes('{{'))
+})
+
+// Every temp folder a test makes, removed once the file is done, even after a failure.
+const made = []
+function tempDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  made.push(dir)
+  return dir
+}
+after(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true })
 })
 
 function cli(script, ...args) {
@@ -62,7 +77,7 @@ test('the command line runs and refuses, directly and through a link as installe
 
 // With no gh on the PATH and fetch rigged to throw, any network or gh use fails the run.
 function sealed(script, ...args) {
-  const trap = join(mkdtempSync(join(tmpdir(), 'pr-body-seal-')), 'trap.mjs')
+  const trap = join(tempDir('pr-body-seal-'), 'trap.mjs')
   writeFileSync(trap, "globalThis.fetch = () => { throw new Error('network used') }\n")
   return spawnSync(process.execPath, ['--import', `file:///${trap.replace(/\\/g, '/')}`, script, ...args], {
     encoding: 'utf8', env: { PATH: '', SystemRoot: process.env.SystemRoot },
@@ -71,7 +86,7 @@ function sealed(script, ...args) {
 
 const script = fileURLToPath(new URL('./pr-body.mjs', import.meta.url))
 function bodyFile(text) {
-  const file = join(mkdtempSync(join(tmpdir(), 'pr-body-file-')), 'body.md')
+  const file = join(tempDir('pr-body-file-'), 'body.md')
   writeFileSync(file, text)
   return file
 }
@@ -104,9 +119,117 @@ test('rendering happens only when asked, and says it sent the body', () => {
 })
 
 test('attach refuses before any network or git use without upload approval', () => {
-  const image = join(mkdtempSync(join(tmpdir(), 'pr-body-img-')), 'a.png')
+  const image = join(tempDir('pr-body-img-'), 'a.png')
   writeFileSync(image, 'not really an image')
   const refused = sealed(script, 'attach', '--task', 'x', image)
   assert.equal(refused.status, 1)
   assert.match(refused.stderr, /--upload-approved/)
+})
+
+// Every gh and git call answered by a stub loaded before the script, so nothing leaves the machine.
+const STUB = `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const replies = JSON.parse(process.env.GH_STUB)
+cp.execFileSync = (cmd, args) => {
+  const call = [cmd, ...args].join(' ')
+  const reply = replies.find(([part]) => call.includes(part))
+  if (!reply) throw Object.assign(new Error('not stubbed: ' + call), { stderr: 'not stubbed: ' + call })
+  return reply[1]
+}
+syncBuiltinESMExports()
+`
+
+function postedCheck(body, html, args = ['--pr', '7']) {
+  const dir = mkdtempSync(join(tmpdir(), 'pr-body-stub-'))
+  const stub = join(dir, 'stub.mjs')
+  writeFileSync(stub, STUB)
+  const replies = [
+    ['gh auth status', ''],
+    ['git remote get-url origin', `https://github.com/${repo}.git`],
+    ['gh pr view 7', JSON.stringify({ body, headRefOid: 'a'.repeat(40) })],
+    ['gh api markdown', html],
+  ]
+  try {
+    return spawnSync(process.execPath, ['--import', pathToFileURL(stub).href, script, 'check', ...args], {
+      encoding: 'utf8', env: { ...process.env, GH_STUB: JSON.stringify(replies) },
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const h2 = names => names.map(name => `<h2 dir="auto">${name}</h2>\n<p dir="auto">filled in abc1234</p>`).join('\n')
+const ALL = ['ELI5', 'What Changed', 'Why', 'Linked Issue', 'Visual Proof', 'Testing', 'Risk', 'AI Disclosure', 'Review', 'Checklist']
+
+test('check --pr passes a body whose rendered sections all appear', () => {
+  const { body } = lintCases['full head in Testing']
+  const run = postedCheck(body, h2(ALL))
+  assert.equal(run.status, 0, run.stderr)
+})
+
+// Written by hand in the shape GitHub gives the list fence fixture: the column-zero fence opens a code
+// block that swallows every heading after it.
+test('check --pr fails when GitHub renders sections away that the offline parser finds', () => {
+  const body = lintCases['full head in Testing'].body.replace('## Risk', '- item\n\n  ```\n  code\n```\n\n## Risk')
+  assert.deepEqual(lintSource(body, 'a'.repeat(40)), [])
+  const html = `${h2(ALL.slice(0, 6))}\n<ul dir="auto">\n<li>item</li>\n</ul>\n<pre class="notranslate"><code>## Risk\n</code></pre>`
+  const run = postedCheck(body, html)
+  assert.equal(run.status, 1, run.stdout)
+  for (const name of ['Risk', 'AI Disclosure', 'Review', 'Checklist']) assert.match(run.stderr, new RegExp(`missing section on GitHub: ${name}`))
+  const rendered = postedCheck(body, html, [bodyFile(body), '--render'])
+  assert.equal(rendered.status, 1, rendered.stdout)
+  assert.match(rendered.stderr, /missing section on GitHub: Risk/)
+})
+
+test('check --render passes a body whose rendered sections all appear, and still binds the head', () => {
+  const { body, head } = lintCases['full head in Testing']
+  const file = bodyFile(body)
+  const good = postedCheck(body, h2(ALL), [file, '--head', head, '--render'])
+  assert.equal(good.status, 0, good.stderr)
+  assert.match(good.stdout, new RegExp(`head ${head}`))
+  const stale = postedCheck(body, h2(ALL), [file, '--head', 'b'.repeat(40), '--render'])
+  assert.equal(stale.status, 1, stale.stdout)
+  assert.match(stale.stderr, /does not name the full head/)
+})
+
+// Written by hand in the shape GitHub gives a heading inside a block quote or a list item. Those
+// headings sit inside another block, so they are not sections of the body.
+test('check --pr does not count a nested heading as a section when the real one is swallowed', () => {
+  const late = ALL.slice(6)
+  const swallowed = '- item\n\n  ```\n  code\n```\n\n## Risk'
+  const nested = {
+    'block quote': [late.map(name => `> ## ${name}`).join('\n'), names => `<blockquote>\n${h2(names)}\n</blockquote>`],
+    'list item': [late.map(name => `- ## ${name}`).join('\n'), names => `<ul dir="auto">\n${names.map(name => `<li>\n${h2([name])}\n</li>`).join('\n')}\n</ul>`],
+  }
+  for (const [kind, [source, wrap]] of Object.entries(nested)) {
+    const body = lintCases['full head in Testing'].body.replace('## Risk', `${source}\n\n${swallowed}`)
+    const html = `${h2(ALL.slice(0, 6))}\n${wrap(late)}\n<ul dir="auto">\n<li>item</li>\n</ul>\n<pre class="notranslate"><code>## Risk\n</code></pre>`
+    const run = postedCheck(body, html)
+    assert.equal(run.status, 1, `${kind}: ${run.stdout}`)
+    for (const name of late) assert.match(run.stderr, new RegExp(`missing section on GitHub: ${name}`), kind)
+  }
+})
+
+test('check --pr reads headings GitHub wraps in anchors, and catches an order GitHub changed', () => {
+  const { body } = lintCases['full head in Testing']
+  const wrapped = ALL.map(name => `<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">${name}</h2><a id="user-content-x" class="anchor" href="#x"><svg></svg></a></div>`).join('\n')
+  assert.equal(postedCheck(body, wrapped).status, 0)
+  const swapped = h2(['Why', ...ALL.filter(name => name !== 'Why')])
+  assert.match(postedCheck(body, swapped).stderr, /sections out of order on GitHub/)
+})
+
+// Runs the other tests in this file with the temp folder pointed at an empty one, which must stay empty.
+// With NODE_TEST_CONTEXT inherited, the inner run printed no results and made no files, so it is removed.
+test('no test leaves a scratch folder behind', () => {
+  const temp = mkdtempSync(join(tmpdir(), 'pr-body-leak-'))
+  try {
+    const env = { ...process.env, TMPDIR: temp, TEMP: temp, TMP: temp }
+    delete env.NODE_TEST_CONTEXT
+    const run = spawnSync(process.execPath, ['--test', '--test-skip-pattern=leaves a scratch folder', fileURLToPath(import.meta.url)], { encoding: 'utf8', env })
+    assert.equal(run.status, 0, run.stdout)
+    assert.match(run.stdout, /pass [1-9]/)
+    assert.deepEqual(readdirSync(temp), [])
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
 })

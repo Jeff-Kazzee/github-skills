@@ -16,6 +16,10 @@ Read the steps you need. To fix CI only, run steps 1, 2, 4 and 8. To summarize t
 comments, run step 1 and report the list by severity and open questions. To babysit,
 run them all. Every rule traces to a row in [references/sources.md](references/sources.md).
 
+When a PR has review findings, or findings arrive after a merge, follow
+[references/findings.md](references/findings.md). Never merge with an open finding, at
+any severity, and never undo a merge by deleting files.
+
 ## 1. Read the state
 
 Read checks and threads from GitHub, not from memory:
@@ -94,8 +98,13 @@ other thread has its decline, question or defer reply.
 
 ## 5. Resolve, summarize and ask for another look
 
-1. Resolve a thread only after its reply posted, and only threads you accepted or
-   deferred. Leave a decline or a question open for the reviewer to close.
+1. Resolve a thread only after its reply posted, and only under the closure rules in
+   [references/findings.md](references/findings.md) section 5. Resolve an accepted
+   thread once its fix is on the PR head and its test passes there, not only on a fix
+   branch. Resolve a deferred thread once Jeff approves the deferral and the issue is
+   filed. Resolve a decline only after you tell Jeff what the finding claimed and why the
+   evidence says it does not hold, and he says yes (Jeff, 2026-11-08). Leave a question
+   open until the reviewer answers.
 
    ```sh
    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id=<thread id>
@@ -110,8 +119,8 @@ other thread has its decline, question or defer reply.
    The GraphQL `requestReviews` mutation replaces the reviewer set unless you pass
    `union: true`.
 
-Done when only declined or questioned threads stay open, the summary posted, and the
-reviewers have a fresh request.
+Done when only questioned threads stay open, every decline Jeff said yes to is
+resolved, the summary posted, and the reviewers have a fresh request.
 
 ## 6. Wait
 
@@ -131,11 +140,13 @@ without a message. The first time you watch a PR in a session, read
 [references/watching.md](references/watching.md) for the `--until` modes, monitors, T3
 Code and rate limits.
 
-If it exits 1 only on unresolved threads, and each one already has your posted decline
-or question, the PR waits on the reviewer. Report that in step 8 and do not restart it.
+If it exits 1 only on unresolved threads, check each one. A decline with posted evidence
+waits on Jeff, not the reviewer: tell Jeff what the finding claimed and why it does not
+hold, and resolve it when he says yes. A posted question waits on the reviewer. Report
+those in step 8 and do not restart `pr-wait` for them.
 
 Done when `pr-wait` exits 0, exits 1 with an event you handle from step 1, or exits 1
-only on threads that wait on the reviewer.
+only on questions that wait on the reviewer.
 
 ## 7. Post only approved text
 
@@ -164,7 +175,14 @@ Done when every posted comment has a URL from GitHub and matches the approved te
 Reread the live state and quote the head SHA, the checks and the mergeability. Report
 the failures you fixed in order, each thread with its answer, and what waits on whom.
 Merge only when the user asked, through `agent-git land` after Jeff approves the exact
-head. Right before a merge, run `git fetch` and recheck the PR. Never merge when it is
+head, and only when no review thread is open. Right before a merge, run `git fetch`,
+recheck the PR, and count open threads with a query that pages through all of them:
+
+```sh
+gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length'
+```
+
+Merge only when every page reports 0. Never merge when it is
 BEHIND or DIRTY, or when base commits that landed after the last green run touch its
 files.
 
@@ -179,5 +197,6 @@ A reviewer writes on `src/parse.ts:40`: "This loops over the list twice." You ag
 2. A second reviewer asks to cache the result. Caching adds state for a five-item list,
    so you draft a decline with that reason and a benchmark.
 3. Jeff approves both. Post each to its thread's top-level comment ID and confirm the
-   URLs. Resolve the first thread and leave the decline open.
+   URLs. Resolve the first thread. Resolve the decline too, because Jeff read its
+   reason and benchmark when he approved the text.
 4. Post the round summary, request review from both reviewers, and start `pr-wait`.

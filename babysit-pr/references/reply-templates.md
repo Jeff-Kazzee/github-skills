@@ -48,7 +48,8 @@ Rules:
   gave one.
 - Back it with something the reviewer can check. A benchmark number beats "I think it
   is fine".
-- Leave the thread open. The reviewer closes it or answers.
+- Resolve the thread only after Jeff reads the evidence and says yes. If the reviewer
+  answers with new evidence, treat it as a new finding.
 - Never reply in anger or say you have said it before. Answer the point.
 
 ## Ask a clarifying question
@@ -96,7 +97,7 @@ Addressed the review in {{first sha}}..{{last sha}}.
 
 - {{thread link}}: {{what changed}} ({{sha}})
 - {{thread link}}: {{what changed}} ({{sha}})
-- {{thread link}}: kept as is, {{one-line reason}}. The thread is open for you.
+- {{thread link}}: kept as is, {{one-line reason}}. Resolved after Jeff's yes. Reply there with new evidence to reopen it.
 - {{thread link}}: deferred to {{issue link}}.
 
 CI: {{all required checks pass on {{head sha}} / {{check}} fails, see below}}.

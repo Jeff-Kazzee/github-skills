@@ -83,6 +83,9 @@ owns, run it on `linveo-16gb`. For anything else, run it inside a Daytona sandbo
 have neither, leave `--clone` off and say so in your report. A URL clones the default
 branch, so pass the path of a checkout to test a branch before it merges.
 
+`--online` treats a local link outside the folder that holds `.git` as broken. For a tree
+with no `.git` folder, such as an archive export, pass `--root <dir>` to name the root.
+
 Done when the command exits 0 on the commit you will publish. A failure means the README
 or the project is wrong. Fix whichever one lied.
 

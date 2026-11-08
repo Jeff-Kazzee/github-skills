@@ -17,12 +17,39 @@ function pages(path, key) {
   return JSON.parse(gh('api', '--paginate', '--slurp', path)).flatMap(page => key ? page[key] : page)
 }
 
-// A rule that is not set answers 404, and a plan without branch protection answers 403.
-function optional(read, fallback) {
+function parsed(text) {
+  try {
+    return JSON.parse(text) ?? {}
+  } catch {
+    return {}
+  }
+}
+
+// The HTTP status and GitHub's message for a failed gh call, from the line gh writes to stderr or from
+// the response body it prints on stdout.
+function failure(error) {
+  const line = `${error.stderr ?? ''}`.trim()
+  const body = parsed(`${error.stdout ?? ''}`)
+  const status = Number(line.match(/\bHTTP (\d{3})\b/)?.[1] ?? body.status) || undefined
+  return { status, said: [line, body.message].filter(Boolean).join(' ') }
+}
+
+function isPrivate(repo) {
+  return gh('repo', 'view', repo, '--json', 'visibility', '--jq', '.visibility').trim() === 'PRIVATE'
+}
+
+// A rule that is not set answers 404. Branch protection on a private repo needs a paid plan, so without
+// one the protection read answers 403 with an upgrade message. Pass planRepo for that read alone. Any
+// other failure, a 403 on another read included, leaves the rule unknown, so the check stops.
+function optional(read, fallback, planRepo) {
   try {
     return read()
   } catch (error) {
-    if (/HTTP 40[34]/.test(`${error.stderr}`)) return fallback
+    const { status, said } = failure(error)
+    if (!status && !said) throw new Error(`gh printed no error for a rule read, so the rule is unknown: ${error.code ?? error.message}`)
+    if (status === 404) return fallback
+    if (status === 403 && planRepo && /\bupgrade\b|make this repository public/i.test(said) && isPrivate(planRepo)) return fallback
+    if (status === 403) throw new Error(`no access to read the repository rules: ${said}`)
     throw error
   }
 }
@@ -56,7 +83,7 @@ async function main([number, flag, repo]) {
   const checks = pages(`repos/${repo}/commits/${head}/check-runs?per_page=100`, 'check_runs')
   const runs = pages(`repos/${repo}/actions/runs?head_sha=${head}&per_page=100`, 'workflow_runs')
   const statuses = JSON.parse(gh('api', `repos/${repo}/commits/${head}/status`)).statuses
-  const contexts = optional(() => JSON.parse(gh('api', `repos/${repo}/branches/${pr.baseRefName}/protection/required_status_checks`)).contexts, [])
+  const contexts = optional(() => JSON.parse(gh('api', `repos/${repo}/branches/${pr.baseRefName}/protection/required_status_checks`)).contexts, [], repo)
   const rules = repoRules(repo, pr.baseRefName)
   const result = floor({
     files,

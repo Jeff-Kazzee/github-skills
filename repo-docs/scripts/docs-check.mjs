@@ -10,8 +10,8 @@
 // title or no verified line, decision records named out of pattern, and Writing law
 // violations. Exits 1 with one "path:line: problem" line per problem.
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PAGE = /\.(md|mdx|markdown)$/i
@@ -188,40 +188,64 @@ function walk(root) {
   return files.sort()
 }
 
-// True only when every segment matches the disk's spelling, as GitHub requires.
+// Walks the path one segment at a time against directory listings, so the answer is the
+// same on a case-sensitive and a case-insensitive file system. Returns 'exact' when every
+// segment matches the disk's spelling, as GitHub requires, 'case' when a segment differs
+// only in case, { unlisted: dir } when a folder on the path cannot be listed, and null
+// when the path does not exist. A folder above the docs root came from the command line,
+// not from a link, so its listing is not needed, and a path under the root keeps the root's
+// spelling.
 const listing = new Map()
-function existsExact(path) {
-  const full = resolve(path)
-  if (!existsSync(full)) return false
-  let dir = full
+const above = (dir, root) => dir !== root && (root + sep).startsWith(dir.endsWith(sep) ? dir : dir + sep)
+function lookup(path, root) {
+  let dir = resolve(path)
   const parts = []
-  while (dirname(dir) !== dir) {
-    parts.unshift(basename(dir))
-    dir = dirname(dir)
+  const inside = relative(root, dir)
+  if (inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)) {
+    parts.push(...inside.split(sep).filter(Boolean))
+    dir = root
+  } else {
+    while (dirname(dir) !== dir) {
+      parts.unshift(basename(dir))
+      dir = dirname(dir)
+    }
   }
+  let found = 'exact'
   for (const part of parts) {
     if (!listing.has(dir)) {
-      try { listing.set(dir, readdirSync(dir)) } catch { listing.set(dir, null) }
+      // A file or a missing folder lists nothing. Any other failure, such as EACCES or EIO, leaves the listing unknown.
+      try { listing.set(dir, readdirSync(dir)) } catch (error) { listing.set(dir, ['ENOENT', 'ENOTDIR'].includes(error.code) ? [] : null) }
     }
     const names = listing.get(dir)
-    if (names && !names.includes(part)) return false
-    dir = join(dir, part)
+    if (!names && !above(dir, root)) return { unlisted: dir }
+    if (names && !names.includes(part)) {
+      const other = names.find(name => name.toLowerCase() === part.toLowerCase())
+      if (!other) return null
+      found = 'case'
+      dir = join(dir, other)
+    } else dir = join(dir, part)
   }
-  return true
+  return existsSync(dir) ? found : null
 }
-
 // GitHub renders a link only when it names the file or folder exactly. A site generator
 // also resolves a bare name to its .md file or folder index, so --site allows those.
 function resolveTarget(from, target, root, site) {
+  const existsExact = path => lookup(path, root) === 'exact'
   const base = target.startsWith('/') ? join(root, target) : join(dirname(from), target)
   const tries = [base, ...(site ? [`${base}.md`, `${base}.mdx`, join(base, 'index.md'), join(base, 'index.mdx')] : [])]
   for (const candidate of tries) {
     if (!existsExact(candidate)) continue
     if (statSync(candidate).isFile()) return candidate
-    if (candidate === base) return ['README.md', 'index.md', '_index.md'].map(name => join(base, name)).find(existsExact) ?? base
+    if (candidate === base) {
+      const indexes = ['README.md', 'index.md', '_index.md', 'index.mdx', 'SUMMARY.md'].map(name => join(base, name))
+      const index = indexes.find(existsExact)
+      if (index) return index
+      return indexes.some(path => lookup(path, root) === 'case') ? { wrongCase: true } : base
+    }
   }
-  if (tries.some(candidate => existsSync(candidate))) return { wrongCase: true }
-  return null
+  const looks = tries.map(candidate => lookup(candidate, root))
+  if (looks.includes('case')) return { wrongCase: true }
+  return looks.find(look => look?.unlisted) ?? null
 }
 
 const wikiName = name => name.replace(/\.(md|mdx|markdown)$/i, '').replace(/[ -]+/g, '-').toLowerCase()
@@ -254,7 +278,17 @@ export function checkTree(root, { wiki = false, index, site = false } = {}) {
     for (const link of links(text, { wiki })) {
       const { target } = link
       if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('//')) continue
-      if (site && (target.startsWith('/') || /\.html?(#|$)/i.test(target))) continue
+      if (site && (target.startsWith('/') || /\.html?(#|$)/i.test(target))) {
+        // The route is not checked, but the page it names still counts as reached.
+        let route = target.split('#')[0].split('?')[0]
+        try { route = decodeURIComponent(route) } catch {}
+        const hit = resolveTarget(full, route.replace(/\.html?$/i, ''), root, true)
+        if (typeof hit === 'string') {
+          const rel = relative(root, hit).split(sep).join('/')
+          if (graph.has(rel)) graph.get(file).add(rel)
+        }
+        continue
+      }
       if (link.wiki) {
         const [page, fragment] = target.split('#')
         const hit = byWikiName.get(wikiName(page))
@@ -279,10 +313,13 @@ export function checkTree(root, { wiki = false, index, site = false } = {}) {
       }
       if (!hit) { report(file, link.line, `broken link ${target}`); continue }
       if (hit.wrongCase) { report(file, link.line, `broken link ${target}: the case differs from the file on disk`); continue }
+      if (hit.unlisted) { report(file, link.line, `cannot check ${target}: the folder ${relative(root, hit.unlisted).split(sep).join('/')} cannot be listed to compare the case`); continue }
       const rel = relative(root, hit).split(sep).join('/')
       if (graph.has(rel)) graph.get(file).add(rel)
       if (fragment && PAGE.test(hit) && !anchorsOf(hit).has(decodeURIComponent(fragment))) {
         report(file, link.line, `broken anchor ${target}`)
+      } else if (fragment && statSync(hit).isDirectory()) {
+        report(file, link.line, `broken anchor ${target}: the folder has no index page to hold it`)
       }
     }
   }
@@ -319,4 +356,6 @@ function main() {
   console.log(`ok: ${dir}, ${pages} pages`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+// import.meta.main (Node 22.18 or later on the 22 line, or 24.2 or later) also covers an entry path a loader maps here.
+// Without it, the realpath check covers a direct `node <file>` run and a symlink, but not a loader-mapped entry.
+if (import.meta.main ?? realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) main()

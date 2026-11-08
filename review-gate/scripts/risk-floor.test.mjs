@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ciState, floor, MAX_LINES } from './risk-rules.mjs'
 
 const file = (path, additions = 5, deletions = 5, patch) => ({ path, additions, deletions, ...(patch === undefined ? {} : { patch }) })
@@ -240,4 +245,118 @@ test('the false green from PRs 6 and 7: a skipped bot and a run that never start
   assert.equal(ciState([bot('skipped')], []), 'did not run')
   assert.equal(ciState([bot('success')], []), 'did not run')
   assert.equal(ciState([], []), 'did not run')
+})
+
+// The command line, with every gh call answered by a stub loaded before the script, so nothing leaves the machine.
+const SCRIPT = fileURLToPath(new URL('./risk-floor.mjs', import.meta.url))
+const STUB = `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const replies = JSON.parse(process.env.GH_STUB)
+cp.execFileSync = (cmd, args) => {
+  const call = [cmd, ...args].join(' ')
+  const reply = replies.find(([part]) => call.includes(part))
+  if (!reply) throw Object.assign(new Error('Command failed: ' + call), { stderr: 'not stubbed: ' + call })
+  if (reply.length < 3) return reply[1]
+  const failure = typeof reply[2] === 'string' ? { stderr: reply[2] } : reply[2]
+  throw Object.assign(new Error('Command failed: ' + call), { stdout: reply[1] }, failure)
+}
+syncBuiltinESMExports()
+`
+
+function floorCli(settings) {
+  const dir = mkdtempSync(join(tmpdir(), 'risk-floor-'))
+  const stub = join(dir, 'stub.mjs')
+  writeFileSync(stub, STUB)
+  const sha = 'a'.repeat(40)
+  const pr = { baseRefName: 'dev', headRefName: 'task/1-x', headRefOid: sha, author: { login: 'Jeff-Kazzee' }, isCrossRepository: false, isDraft: false, changedFiles: 1 }
+  const replies = [
+    ...settings,
+    ['repo view o/r', 'PRIVATE'],
+    ['pulls/5/files', JSON.stringify([[{ filename: 'docs/guide.md', additions: 1, deletions: 0, patch: '+a line' }]])],
+    ['check-runs', JSON.stringify([{ check_runs: [] }])],
+    ['actions/runs', JSON.stringify([{ workflow_runs: [workflow('success', at('10'))] }])],
+    [`commits/${sha}/status`, JSON.stringify({ statuses: [] })],
+    ['pr view 5', JSON.stringify(pr)],
+  ]
+  try {
+    return spawnSync(process.execPath, ['--import', pathToFileURL(stub).href, SCRIPT, '5', '--repo', 'o/r'], {
+      encoding: 'utf8', env: { ...process.env, GH_STUB: JSON.stringify(replies) },
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const absent = what => `gh: Not Found (HTTP 404)\n${what}`
+test('unset repository rules answer 404, and the PR is judged without them', () => {
+  const run = floorCli([['protection/required_status_checks', '', absent('Branch not protected')], ['contents/.github/risk-paths', '', absent('')]])
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /level Low, nothing blocks it/)
+})
+
+test('a plan without branch protection answers 403 with an upgrade message, and counts as no required checks', () => {
+  const plan = 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)'
+  const run = floorCli([['protection/required_status_checks', '', plan], ['contents/.github/risk-paths', '', absent('')]])
+  assert.equal(run.status, 0, run.stderr)
+})
+
+test('a 403 that forbids reading repository rules fails closed', () => {
+  const forbidden = 'gh: Resource not accessible by integration (HTTP 403)'
+  for (const settings of [
+    [['protection/required_status_checks', '', forbidden], ['contents/.github/risk-paths', '', forbidden]],
+    [['protection/required_status_checks', '', absent('Branch not protected')], ['contents/.github/risk-paths', '', forbidden]],
+    [['protection/required_status_checks', '', 'gh: Must have admin rights to Repository. (HTTP 403)'], ['contents/.github/risk-paths', '', absent('')]],
+  ]) {
+    const run = floorCli(settings)
+    assert.equal(run.status, 2, run.stdout)
+    assert.doesNotMatch(run.stdout, /nothing blocks it/)
+    assert.match(run.stderr, /treat it as blocked/)
+  }
+})
+
+test('a rule read that fails for any reason but 404 or the plan limit fails closed', () => {
+  for (const said of ['gh: Server Error (HTTP 500)', 'gh: Bad credentials (HTTP 401)']) {
+    for (const settings of [
+      [['protection/required_status_checks', '', said], ['contents/.github/risk-paths', '', absent('')]],
+      [['protection/required_status_checks', '', absent('Branch not protected')], ['contents/.github/risk-paths', '', said]],
+    ]) {
+      const run = floorCli(settings)
+      assert.equal(run.status, 2, `${said}: ${run.stdout}`)
+      assert.doesNotMatch(run.stdout, /nothing blocks it/)
+      assert.match(run.stderr, /treat it as blocked/)
+    }
+  }
+})
+
+test('a plan limit is read from the status and an upgrade message, however GitHub words it', () => {
+  for (const plan of ['gh: Upgrade to GitHub Team to enable this feature. (HTTP 403)', 'gh: Upgrade your plan to use protected branches. (HTTP 403)']) {
+    const run = floorCli([['protection/required_status_checks', '', plan], ['contents/.github/risk-paths', '', absent('')]])
+    assert.equal(run.status, 0, `${plan}: ${run.stderr}`)
+  }
+})
+
+test('gh answers 404 in the body it prints when its error line says nothing', () => {
+  const body = JSON.stringify({ message: 'Branch not protected', status: '404' })
+  const run = floorCli([['protection/required_status_checks', body, { stderr: undefined }], ['contents/.github/risk-paths', '', absent('')]])
+  assert.equal(run.status, 0, run.stderr)
+})
+
+test('a plan message counts only on the protection read of a private repo', () => {
+  const plan = 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)'
+  for (const settings of [
+    [['protection/required_status_checks', '', absent('Branch not protected')], ['contents/.github/risk-paths', '', plan]],
+    [['repo view o/r', 'PUBLIC'], ['protection/required_status_checks', '', plan], ['contents/.github/risk-paths', '', absent('')]],
+  ]) {
+    const run = floorCli(settings)
+    assert.equal(run.status, 2, run.stdout)
+    assert.match(run.stderr, /treat it as blocked/)
+  }
+})
+
+test('a failed rule read with no error text fails closed and names the cause', () => {
+  for (const failure of [{ stderr: undefined, code: 'ENOENT' }, { stderr: '', code: 'ENOENT' }, { stderr: '', status: 1 }]) {
+    const run = floorCli([['protection/required_status_checks', '', failure], ['contents/.github/risk-paths', '', absent('')]])
+    assert.equal(run.status, 2, run.stdout)
+    assert.match(run.stderr, /gh printed no error/, JSON.stringify(failure))
+  }
 })

@@ -122,18 +122,37 @@ export function headingsOf(markdown) {
     .map(m => (m[1] === 'Visual Proof' ? 'Proof' : m[1]))
 }
 
+// The ## sections of a body, skipping headings inside fenced code. A fence left open runs to the end.
+function sectionParts(text) {
+  const parts = []
+  let fence = null
+  for (const line of text.split('\n')) {
+    const mark = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    const heading = /^##\s+(.+?)\s*$/.exec(line)
+    if (fence) {
+      if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length && !mark[2].trim()) fence = null
+    } else if (mark) {
+      fence = mark[1]
+    } else if (heading) {
+      parts.push({ name: heading[1], body: [] })
+      continue
+    }
+    parts.at(-1)?.body.push(line)
+  }
+  return parts
+}
+
 // Problems with a PR body against a declared shape: each section present, in order, and not empty.
 export function shapeProblems(body, sections) {
   const text = (body ?? '').replace(/\r\n/g, '\n')
-  const parts = text.replace(/<!--[\s\S]*?-->/g, '').split(/^(?=##\s)/m).filter(p => p.startsWith('##'))
-  const found = parts.map(p => /^##\s+(.+?)\s*$/m.exec(p)[1])
+  const parts = sectionParts(text.replace(/<!--[\s\S]*?-->/g, ''))
+  const found = parts.map(p => p.name)
   const problems = []
   for (const s of sections) if (!found.includes(s)) problems.push(`missing section: ${s}`)
   const order = found.filter(s => sections.includes(s))
   if (order.join('|') !== sections.filter(s => found.includes(s)).join('|')) problems.push(`sections out of order: ${order.join(', ')}`)
   for (const part of parts) {
-    const name = /^##\s+(.+?)\s*$/m.exec(part)[1]
-    if (sections.includes(name) && !part.split('\n').slice(1).join('\n').trim()) problems.push(`empty section: ${name}`)
+    if (sections.includes(part.name) && !part.body.join('\n').trim()) problems.push(`empty section: ${part.name}`)
   }
   if (PLACEHOLDER.test(text)) problems.push('unfilled {{field}}')
   if (text.includes(EM_DASH)) problems.push('em dash')
@@ -356,7 +375,7 @@ function checkAgents(repo) {
 function checkSecrets(repo) {
   const tracked = repo.tracked()
   if (!tracked) return [skip('secrets.env-files', 'repo-standards', 'not a git checkout, tracked files unknown')]
-  const leaked = tracked.filter(p => /(^|\/)\.env(\.[\w-]+)?$/.test(p) && !/\.env\.(schema|example|sample|template)$/.test(p))
+  const leaked = tracked.filter(p => /(^|\/)\.env(\.[\w-]+)*$/.test(p) && !/\.(schema|example|sample|template)$/.test(p))
   return [leaked.length
     ? bad('secrets.env-files', 'repo-standards', `env files are tracked: ${leaked.join(', ')}`, 'Remove them from git, rotate what they held, and declare names in .env.schema.')
     : ok('secrets.env-files', 'repo-standards', 'no .env file is tracked')]
@@ -535,4 +554,6 @@ function main(argv) {
 
 // Installed copies are often links, so compare real paths.
 const invoked = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null
-if (invoked === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = main(process.argv.slice(2))
+// import.meta.main (Node 22.18 or later on the 22 line, or 24.2 or later) also covers an entry path a loader maps here.
+// Without it, the realpath check covers a direct `node <file>` run and a symlink, but not a loader-mapped entry.
+if (import.meta.main ?? invoked === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = main(process.argv.slice(2))

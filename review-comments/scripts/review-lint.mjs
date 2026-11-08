@@ -3,8 +3,8 @@
 // Input: the JSON body for POST /repos/{owner}/{repo}/pulls/{n}/reviews.
 // Usage: node review-lint.mjs review.json
 // Exit 0 when clean, 1 when a check fails, 2 on bad input.
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const LABEL = /^(blocking|question|suggestion|nit|praise)(\s*\((blocking|non-blocking)\))?:\s*\S/i;
 const EXTREME = /\b(obviously|clearly wrong|terrible|horrible|stupid|insane|no sane|sloppy|ridiculous)\b/i;
@@ -70,7 +70,9 @@ export function lint(review) {
   return problems;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+// import.meta.main (Node 22.18 or later on the 22 line, or 24.2 or later) also covers an entry path a loader maps here.
+// Without it, the realpath check covers a direct `node <file>` run and a symlink, but not a loader-mapped entry.
+if (import.meta.main ?? realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) {
   const file = process.argv[2];
   if (!file) { console.error('usage: node review-lint.mjs review.json'); process.exit(2); }
   let review;

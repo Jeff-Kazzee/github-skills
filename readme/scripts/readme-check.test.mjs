@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { after, before, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import { lint, online, quickStartCommands, quickStartScript, runQuickStart } from './readme-check.mjs'
+import { lint, online, quickStartCommands, quickStartScript, runQuickStart, urls } from './readme-check.mjs'
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')
 const dirs = []
@@ -79,9 +80,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 MIT. See [LICENSE](LICENSE).
 `
 
-const repoDir = () => {
-  const dir = fresh()
-  mkdirSync(join(dir, 'docs'))
+const repoDir = (dir = fresh()) => {
+  mkdirSync(join(dir, 'docs'), { recursive: true })
   for (const name of ['LICENSE', 'CONTRIBUTING.md', 'ARCHITECTURE.md', 'docs/demo.png', 'docs/index.md']) {
     writeFileSync(join(dir, name), name.endsWith('.png') ? PNG : 'x')
   }
@@ -183,6 +183,25 @@ test('code blocks are not prose', () => {
   assert.deepEqual(lint(text, repoDir()), [])
 })
 
+test('a GitHub Actions expression is not an unfilled field', () => {
+  const workflow = ['lantern app.log --request 42', '```', '', '```yaml', 'env:', '  GH_TOKEN: ${{ github.token }}'].join('\n')
+  const text = good().replace('lantern app.log --request 42', workflow)
+  assert.deepEqual(lint(text, repoDir()), [])
+  assert.match(lint(good().replace('You need Node 22.', 'You need {{runtime}}.'), repoDir()).join(), /unfilled/)
+})
+
+test('an autolink satisfies the documentation section', () => {
+  const text = good().replace('See [the docs](docs/index.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md).', '<https://example.test/docs>')
+  assert.deepEqual(lint(text, repoDir()), [])
+})
+
+test('a line holding only a URL is not the description', () => {
+  const top = /<div align="center">\n {2}<strong>[\s\S]*?A log viewer for small teams on call\.\n<\/div>/
+  for (const line of ['<https://example.test/home>', 'https://example.test/home']) {
+    assert.match(lint(good().replace(top, line), repoDir()).join(), /no one-line description/)
+  }
+})
+
 test('reads quick start commands, dropping prompts and comments', () => {
   const text = good().replace('echo built > out.txt', '# set up\n$ echo built > out.txt')
   assert.deepEqual(quickStartCommands(text), ['echo built > out.txt', 'test -f out.txt'])
@@ -193,6 +212,7 @@ let base
 before(async () => {
   server = createServer((request, response) => {
     if (request.url.includes('gone')) return response.writeHead(404).end()
+    if (request.url.includes('amp;')) return response.writeHead(400).end()
     if (request.url.includes('fake')) return response.writeHead(200, { 'content-type': 'image/svg+xml' }).end('<svg><text>repo or workflow not found</text></svg>')
     if (request.url.includes('page-as-badge')) return response.writeHead(200, { 'content-type': 'text/html' }).end('<html>')
     if (request.url.includes('corrupt')) return response.writeHead(200, { 'content-type': 'image/svg+xml' }).end('not an svg')
@@ -282,6 +302,55 @@ test('online fails on a heading that is gone from a linked Markdown file', async
   for (const link of ['guide.md#existing-heading', 'guide.md#twice-1', 'guide.md#custom']) assert.deepEqual(await check(link), [])
 })
 
+test('online fails on a dead autolink', async () => {
+  const text = live().replace('## Documentation', [`<${base}/gone>`, '', '## Documentation'].join('\n'))
+  assert.match((await online(text, repoDir())).join(), /HTTP 404/)
+})
+
+test('online probes an autolink with its character references decoded', async () => {
+  const text = live().replace('## Documentation', [`<${base}/q?a=1&amp;b=2&#38;c=3&#x26;d=4>`, '', '## Documentation'].join('\n'))
+  assert.deepEqual(await online(text, repoDir()), [])
+  assert.deepEqual(urls('<https://x.test/q?a=1&#38;b=2&#x26;c=3&AMP;d=4>').links, ['https://x.test/q?a=1&b=2&c=3&d=4'])
+})
+
+test('online rejects a local asset outside the repository', async () => {
+  const outer = fresh()
+  const dir = repoDir(join(outer, 'repo'))
+  mkdirSync(join(dir, '.git'))
+  writeFileSync(join(outer, 'secret.png'), PNG)
+  for (const link of ['%2e%2e/secret.png', '../secret.png']) {
+    assert.match((await online(live().replace('docs/demo.png', link), dir)).join(), /outside the repository/)
+  }
+})
+
+test('online accepts a parent path that stays inside the repository', async () => {
+  const root = repoDir()
+  mkdirSync(join(root, '.git'))
+  const dir = repoDir(join(root, 'sub'))
+  writeFileSync(join(root, 'shot.png'), PNG)
+  assert.deepEqual(await online(live().replace('docs/demo.png', '../shot.png'), dir), [])
+})
+
+test('online reports a malformed escape in an anchor instead of throwing', async () => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'guide.md'), '# Start\n')
+  const text = live().replace('## Documentation', ['[a](#100%)', '[b](guide.md#100%)', '', '## Documentation'].join('\n'))
+  const found = (await online(text, dir)).join('\n')
+  assert.match(found, /broken anchor #100%/)
+  assert.match(found, /broken anchor guide\.md#100%/)
+})
+
+test('online decodes a percent-encoded local path', async () => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'User Guide.md'), ['# Start here', ''].join('\n'))
+  writeFileSync(join(dir, 'user flow.png'), PNG)
+  writeFileSync(join(dir, '100%.md'), 'x')
+  const text = live().replace('docs/index.md', 'User%20Guide.md#start-here').replace('docs/demo.png', 'user%20flow.png')
+    .replace('## Documentation', ['[full](100%.md)', '', '## Documentation'].join('\n'))
+  assert.deepEqual(await online(text, dir), [])
+  assert.match((await online(live().replace('docs/index.md', 'No%20Such.md'), dir)).join(), /missing file No%20Such\.md/)
+})
+
 test('online fails on a badge URL that serves a page', async () => {
   const text = live().replace('ci-passing-green/badge.svg', 'page-as-badge/badge.svg')
   assert.match((await online(text, repoDir())).join(), /not an image/)
@@ -325,6 +394,185 @@ test('a here-string opens no heredoc, and a tab-indented terminator closes one',
   assert.deepEqual(quickStartCommands(text), ['cat <<< word', 'cat <<-EOF', 'echo after'])
 })
 
+test('a failure before the last stage of a pipeline fails the quick start', () => {
+  const text = good().replace(['echo built > out.txt', 'test -f out.txt'].join('\n'), 'false | cat')
+  assert.match(runQuickStart(text, repo('one')).join(), /failed on a fresh clone/)
+})
+
+test('a producer cut off by head does not fail the quick start', () => {
+  const text = good().replace(['echo built > out.txt', 'test -f out.txt'].join('\n'), 'yes ready | head -n 1')
+  assert.deepEqual(runQuickStart(text, repo('one')), [])
+})
+
+test('the quick start still stops at the first failure that is not SIGPIPE', () => {
+  const source = repo('one')
+  for (const script of ['false && echo never', '! true', 'false\necho after', '(false)\necho after', 'yes ready | head -n 1 | false\necho after', 'f() { false\necho inside\n}\nf\necho after']) {
+    const text = good().replace(['echo built > out.txt', 'test -f out.txt'].join('\n'), () => script)
+    assert.match(runQuickStart(text, source).join(), /failed on a fresh clone, exit 1:/, script)
+  }
+})
+
+test('the checker runs when started through a symlinked skill folder', t => {
+  const link = join(fresh(), 'scripts')
+  try {
+    symlinkSync(dirname(fileURLToPath(import.meta.url)), link, 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  const run = spawnSync(process.execPath, [join(link, 'readme-check.mjs')], { encoding: 'utf8' })
+  assert.equal(run.status, 2)
+  assert.match(run.stderr, /usage: readme-check\.mjs/)
+})
+
 test('a clone that cannot start fails', () => {
   assert.match(runQuickStart(good(), 'file:///no/such/repo').join(), /could not clone/)
+})
+
+test('online rejects a symlink in the repository that points outside it', async t => {
+  const outer = fresh()
+  const dir = repoDir(join(outer, 'repo'))
+  mkdirSync(join(dir, '.git'))
+  writeFileSync(join(outer, 'secret.png'), PNG)
+  try {
+    symlinkSync(join(outer, 'secret.png'), join(dir, 'docs', 'linked.png'))
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(live().replace('docs/demo.png', 'docs/linked.png'), dir)).join(), /outside the repository/)
+})
+
+test('online takes an explicit root for a tree with no .git folder', async () => {
+  const root = repoDir()
+  const dir = repoDir(join(root, 'sub'))
+  writeFileSync(join(root, 'shot.png'), PNG)
+  const text = live().replace('docs/demo.png', '../shot.png')
+  assert.match((await online(text, dir)).join(), /outside the repository/)
+  assert.deepEqual(await online(text, dir, root), [])
+})
+
+test('the command line reads --root as the repository root', async () => {
+  const root = repoDir()
+  const dir = repoDir(join(root, 'sub'))
+  writeFileSync(join(root, 'shot.png'), PNG)
+  writeFileSync(join(dir, 'README.md'), live().replace('docs/demo.png', '../shot.png'))
+  const checker = join(dirname(fileURLToPath(import.meta.url)), 'readme-check.mjs')
+  const run = await new Promise(done => execFile(process.execPath, [checker, '--root', root, join(dir, 'README.md'), '--online'], (error, stdout, stderr) => done({ code: error?.code ?? 0, stderr })))
+  assert.equal(run.code, 0, run.stderr)
+})
+
+test('a four-backtick fence hides the headings and sh blocks it shows as an example', () => {
+  const f3 = '`'.repeat(3)
+  const f4 = '`'.repeat(4)
+  const example = `${f4}md\n## Quick start\n\n${f3}sh\nrm -rf /tmp/example\n${f3}\n${f4}\n`
+  const text = `# T\n\n## Quick start\n\n${example}\n${f3}sh\npnpm test\n${f3}\n`
+  assert.deepEqual(quickStartCommands(text), ['pnpm test'])
+})
+
+test('online reports an anchor on a folder with no README', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'page.txt'), 'x')
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing: the folder has no README to hold it/)
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/)'), dir), [])
+})
+
+test('online checks an anchor on a folder against its README, in any case', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#uninstall)'), dir)).join(), /broken anchor guide\/#uninstall/)
+})
+
+test('online does not report an anchor on a folder whose README is not Markdown', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+})
+
+test('online reports an anchor on a folder that cannot be listed, not thrown', async t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o311)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /cannot check guide\/#install: the folder cannot be listed/)
+})
+
+test('online uses the Markdown README for a folder anchor when another README sits beside it', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  mkdirSync(join(dir, 'guide', 'README.adoc'))
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing/)
+})
+
+test('online reports a folder anchor whose README is a dangling symlink, not thrown', async t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('gone.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /broken anchor guide\/#install: the folder has no README to hold it/)
+})
+
+const folderRepo = () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  return dir
+}
+const linkTo = target => live().replace('(ARCHITECTURE.md)', `(${target})`)
+
+test('online reports a malformed fragment in a folder link as a broken anchor', async () => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.match((await online(linkTo('guide/#%E0%A4%A'), dir)).join(), /broken anchor guide\/#%E0%A4%A/)
+})
+
+test('online passes a folder anchor when any Markdown README in the folder holds it', async () => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.markdown'), '# Guide\n')
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(await online(linkTo('guide/#install'), dir), [])
+})
+
+test('online reports a folder anchor whose README is a symlink loop, not thrown', async t => {
+  const dir = folderRepo()
+  try { symlinkSync('README.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install/)
+})
+
+test('online reports a folder anchor whose README cannot be read, not thrown', async t => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide', 'README.md'), 0o000)
+  t.after(() => chmodSync(join(dir, 'guide', 'README.md'), 0o644))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still read a file after chmod 000') } catch {}
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install: EACCES/)
+})
+
+test('online reports a folder anchor on a folder that can be listed but not entered, not thrown', async t => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o644)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install/)
 })
