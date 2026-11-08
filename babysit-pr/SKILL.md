@@ -98,8 +98,10 @@ other thread has its decline, question or defer reply.
 
 ## 5. Resolve, summarize and ask for another look
 
-1. Resolve a thread only after its reply posted, and only threads you accepted or
-   deferred. Leave a decline or a question open for the reviewer to close.
+1. Resolve a thread only after its reply posted. Resolve an accepted or deferred thread
+   then. Resolve a decline only after you tell Jeff what the finding claimed and why the
+   evidence says it does not hold, and he says yes (Jeff, 2026-11-08). Leave a question
+   open until the reviewer answers.
 
    ```sh
    gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -f id=<thread id>
@@ -190,5 +192,6 @@ A reviewer writes on `src/parse.ts:40`: "This loops over the list twice." You ag
 2. A second reviewer asks to cache the result. Caching adds state for a five-item list,
    so you draft a decline with that reason and a benchmark.
 3. Jeff approves both. Post each to its thread's top-level comment ID and confirm the
-   URLs. Resolve the first thread and leave the decline open.
+   URLs. Resolve the first thread. Resolve the decline too, because Jeff read its
+   reason and benchmark when he approved the text.
 4. Post the round summary, request review from both reviewers, and start `pr-wait`.

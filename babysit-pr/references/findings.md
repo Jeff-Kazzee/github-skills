@@ -87,9 +87,12 @@ Reply in each thread with [reply-templates.md](reply-templates.md):
 - Deferred: only with Jeff's yes, and only with an issue link in the reply. A deferred
   finding counts as open until Jeff approves the deferral.
 
-Resolve a thread when its fix is on the PR head and its test passes there, or when its
-not-reproduced evidence is posted, or when Jeff has approved its deferral and the issue
-is filed. Post replies only after Jeff approves the text, as step 7 of the skill says.
+Resolve a thread when its fix is on the PR head and its test passes there, or when Jeff
+has approved its deferral and the issue is filed. Resolve a not-reproduced thread once
+its evidence is posted, you have told Jeff what the finding claimed and why it does not
+hold, and he says yes (Jeff, 2026-11-08). A reviewer can be wrong, and a merge must not
+wait forever on one, so this resolved thread does not block section 6. If the reviewer
+answers with new evidence, start again at section 2. Post replies only after Jeff approves the text, as step 7 of the skill says.
 
 A finding with no thread, such as one in a review summary, gets one PR comment that
 lists each such finding with its outcome and fix commit. GitHub cannot resolve it, so
