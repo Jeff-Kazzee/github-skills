@@ -27,7 +27,8 @@ export const HEADINGS = {
   breaking: [['what changed', 'what you get'], ['who is affected'], ['no action'], ['migration']],
 }
 
-const withoutFences = (text) => text.replace(/^```[\s\S]*?^```[ \t]*$/gm, (m) => m.replace(/[^\n]/g, ''))
+// A fence closes on a line of at least as many backticks, so a four-backtick fence can hold a three-backtick one.
+const withoutFences = (text) => text.replace(/^(`{3,})(?!`)[\s\S]*?^\1`*[ \t]*$/gm, (m) => m.replace(/[^\n]/g, ''))
 const withoutCode = (text) => withoutFences(text).replace(/`[^`\n]*`/g, '')
 const withoutComments = (text) => text.replace(/<!--[\s\S]*?-->/g, '')
 const prose = (text) => withoutCode(withoutComments(text))
@@ -117,4 +118,5 @@ function main(argv) {
   return problems.length ? 1 : 0
 }
 
-if (realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) process.exitCode = main(process.argv.slice(2))
+// import.meta.main also covers an entry path a loader maps here. The realpath check covers a Node without it.
+if (import.meta.main ?? realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) process.exitCode = main(process.argv.slice(2))

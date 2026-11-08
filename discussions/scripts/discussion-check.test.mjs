@@ -1,5 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { checkForm, checkPost, common, headings } from './discussion-check.mjs'
 
 const rfc = `# Summary
@@ -52,6 +57,14 @@ test('a question may give its version as inline code', () => {
   assert.deepEqual(checkPost('On Vite `5.4.2`:\n\n```\nError: base is not set\n```', 'question'), [])
 })
 
+test('a version inside a four-backtick fence does not count', () => {
+  const missing = 'a question needs the version it runs on, such as 15.2.1'
+  assert.ok(checkPost('Question?\n\n````text\nError `5.4.2`\n````\n', 'question').includes(missing))
+  assert.ok(checkPost('Question?\n\n````md\n```\nv1.2.3\n```\n````\n', 'question').includes(missing))
+  assert.ok(checkPost('Question?\r\n\r\n```text\r\nError 5.4.2\r\n```\r\n', 'question').includes(missing))
+  assert.deepEqual(checkPost('On Vite `5.4.2`:\n\n````\nError: base is not set\n````\n', 'question'), [])
+})
+
 test('an answer that opens with a greeting fails', () => {
   const out = checkPost('Hi there\n\nSet `base` to `./`. See https://vite.dev/config/#base', 'answer')
   assert.deepEqual(out, ['lead with the cause or the fix, not a greeting'])
@@ -100,4 +113,15 @@ test('a form with only markdown, validations on markdown, or a bad name fails', 
 test('a poll form fails', () => {
   const form = 'body:\n  - type: input\n    attributes:\n      label: Q\n'
   assert.deepEqual(checkForm(form, 'polls.yml'), ['discussion category forms do not support polls'])
+})
+
+test('the checker runs when a loader maps a virtual entry path to it', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'virtual-entry-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const target = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'discussion-check.mjs')).href
+  const loader = join(dir, 'loader.mjs')
+  writeFileSync(loader, `export const resolve = (specifier, context, next) => next(specifier.endsWith('virtual-entry') ? ${JSON.stringify(target)} : specifier, context)\n`)
+  const run = spawnSync(process.execPath, ['--no-warnings', '--experimental-loader', pathToFileURL(loader).href, join(dir, 'virtual-entry')], { encoding: 'utf8' })
+  assert.equal(run.status, 2, run.stderr)
+  assert.match(run.stderr, /usage/i)
 })
