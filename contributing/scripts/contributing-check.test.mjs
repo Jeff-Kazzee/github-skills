@@ -279,7 +279,7 @@ test('a clone line that ends with && still drops the cd on the next line', () =>
 })
 
 test('a << inside quotes, a comment or arithmetic opens no heredoc', () => {
-  for (const line of ['echo "use <<EOF to start one"', "echo 'a <<EOF b'", 'pnpm build # not a <<EOF', 'echo $((1 << 2))', 'cat <<<word']) {
+  for (const line of ['echo "use <<EOF to start one"', "echo 'a <<EOF b'", 'pnpm build # not a <<EOF', 'echo $((1 << 2))', 'cat <<<word', 'echo "$((1 << 2))"', 'echo "$(date) <<EOF"', 'echo "$(echo \'<<EOF\')"']) {
     assert.deepEqual(commands('```sh\n' + line + '\npnpm test\n```\n'), [line, 'pnpm test'], line)
   }
 })
@@ -355,4 +355,48 @@ test('a cd below the clone keeps the part under it', () => {
   assert.equal(setupScript(deep), 'cd packages/core && pnpm test\necho built > out.txt\ntest -f out.txt')
   const dotted = good().replace(clone, 'git clone https://github.com/example/lantern.git && cd ./lantern/\n')
   assert.equal(setupScript(dotted), 'echo built > out.txt\ntest -f out.txt')
+})
+
+test('a quoted cd into the clone is dropped', () => {
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  for (const shape of [
+    'git clone https://github.com/example/lantern.git && cd "lantern" && test -f package.txt\n',
+    "git clone https://github.com/example/lantern.git && cd 'lantern' && test -f package.txt\n",
+    'git clone https://github.com/example/lantern.git "work" && cd "work" && test -f package.txt\n',
+  ]) {
+    const text = good().replace(clone, () => shape)
+    assert.ok(text.includes(shape))
+    assert.equal(setupScript(text), 'test -f package.txt\necho built > out.txt\ntest -f out.txt', shape)
+    assert.deepEqual(runSetup(text, repo()), [], shape)
+  }
+})
+
+test('a quoted cd below the clone keeps the quoted part under it', () => {
+  const source = repo()
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.test', ...args], { cwd: source, stdio: 'pipe' })
+  for (const sub of ['sub', 'my sub']) {
+    mkdirSync(join(source, sub))
+    writeFileSync(join(source, sub, 'marker.txt'), 'x')
+  }
+  git('add', '.')
+  git('commit', '-qm', 'two')
+  const clone = 'git clone https://github.com/example/lantern.git\ncd lantern\n'
+  for (const [cd, kept] of [['cd "lantern/sub"', 'cd "sub"'], ["cd 'lantern/my sub'", "cd 'my sub'"]]) {
+    const text = good().replace(clone, () => `git clone https://github.com/example/lantern.git && ${cd} && test -f marker.txt\n`)
+    assert.equal(setupScript(text), `${kept} && test -f marker.txt\necho built > out.txt\ntest -f out.txt`, cd)
+    assert.deepEqual(runSetup(text, source), [], cd)
+  }
+})
+
+test('a heredoc inside a quoted command substitution keeps its body', () => {
+  const body = "  port: 8080\n# keep\nEOF"
+  assert.equal(commands("```sh\nvalue=\"$(cat <<'EOF'\n" + body + "\n)\"\n```\n")[0], "value=\"$(cat <<'EOF'\n" + body)
+  assert.equal(commands('```sh\nvalue="prefix $(cat <<-END\n\t  indented\n\tEND\n)"\n```\n')[0], 'value="prefix $(cat <<-END\n\t  indented\n\tEND')
+})
+
+test('a heredoc inside a quoted command substitution writes the file the guide shows', () => {
+  const text = good()
+    .replace('echo built > out.txt', () => "value=\"$(cat <<'EOF'\n  port: 8080\n# keep\nEOF\n)\"\necho \"$value\" > config.yml")
+    .replace('test -f out.txt', () => "grep -q '^  port: 8080$' config.yml && grep -q '^# keep$' config.yml")
+  assert.deepEqual(runSetup(text, repo()), [])
 })
