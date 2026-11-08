@@ -101,9 +101,9 @@ test('a page needs a title and a verified line, in any form real projects use', 
 test('the Writing law is checked in prose only', () => {
   const text = [
     '---', 'title: A; B', '---', '# Title', V,
-    'Fast — and wide.', 'Pages 1–3.', 'Run it; then stop.', 'A powerful tool.',
+    'Fast \u2014 and wide.', 'Pages 1\u20133.', 'Run it; then stop.', 'A powerful tool.',
     'Code `a; b` stays.', '<!-- a; b -->', 'import X from "y";',
-    '````md', '```js', 'a; b — c', '```', 'still code; here', '````', 'After.',
+    '````md', '```js', 'a; b \u2014 c', '```', 'still code; here', '````', 'After.',
   ].join('\n')
   const found = lintPage(text).map(p => `${p.line}: ${p.problem}`)
   assert.deepEqual(found, ['6: em dash', '7: en dash', '8: semicolon in prose', '9: marketing word "powerful"'])

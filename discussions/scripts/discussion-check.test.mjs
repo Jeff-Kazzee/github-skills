@@ -69,7 +69,7 @@ test('a breaking-change announcement needs its sections and a link', () => {
 })
 
 test('the Writing law catches dashes, semicolons, hype and placeholders', () => {
-  const out = common('A fast tool — truly.\nIt works; it ships.\nA powerful option.\n{{name}}')
+  const out = common('A fast tool \u2014 truly.\nIt works; it ships.\nA powerful option.\n{{name}}')
   assert.equal(out.length, 4)
 })
 

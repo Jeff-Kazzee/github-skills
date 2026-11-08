@@ -102,8 +102,8 @@ for (const [name, change, expected] of [
   ['a missing linked file', t => t.replace('docs/style.md#naming', 'docs/gone.md'), /missing file docs\/gone\.md/],
   ['a broken anchor in this file', t => t.replace('#running-tests', '#nowhere'), /broken anchor #nowhere/],
   ['a broken anchor in a linked file', t => t.replace('#naming', '#casing'), /broken anchor docs\/style\.md#casing/],
-  ['an em dash', t => t.replace('You need Node 22.', 'You need Node 22 — or newer.'), /em dash/],
-  ['an en dash', t => t.replace('You need Node 22.', 'You need Node 20–22.'), /en dash/],
+  ['an em dash', t => t.replace('You need Node 22.', 'You need Node 22 \u2014 or newer.'), /em dash/],
+  ['an en dash', t => t.replace('You need Node 22.', 'You need Node 20\u201322.'), /en dash/],
   ['a semicolon in prose', t => t.replace('You need Node 22.', 'You need Node 22; or newer.'), /semicolon/],
   ['a marketing word', t => t.replace('You need Node 22.', 'Setup is seamless.'), /marketing word "seamless"/],
   ['a file over the word limit', t => t.replace('Write the subject in the imperative.', 'word '.repeat(2600)), /words, the limit is 2500/],
@@ -140,7 +140,7 @@ test('headings that use other words still count as the section', () => {
 })
 
 test('code blocks are not prose', () => {
-  const text = good().replace('echo built > out.txt', 'echo built > out.txt; echo seamless — done')
+  const text = good().replace('echo built > out.txt', 'echo built > out.txt; echo seamless \u2014 done')
   assert.deepEqual(lint(text, repoDir()), [])
 })
 

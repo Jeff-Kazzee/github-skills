@@ -165,8 +165,8 @@ export function lintPage(text, { name = 'page.md', wiki = false } = {}) {
     const at = i + 1
     const words = visibleText(line)
     if (/\{\{[^}]+\}\}/.test(words)) add(at, 'an unfilled {{field}} remains')
-    if (words.includes('—')) add(at, 'em dash')
-    if (words.includes('–')) add(at, 'en dash')
+    if (words.includes('\u2014')) add(at, 'em dash')
+    if (words.includes('\u2013')) add(at, 'en dash')
     if (words.includes(';')) add(at, 'semicolon in prose')
     const hype = HYPE.exec(words.replace(/[*_~[\]]/g, ''))
     if (hype) add(at, `marketing word "${hype[0]}"`)

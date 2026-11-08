@@ -46,7 +46,7 @@ const hasFence = (text) => /^```/m.test(text)
 export function common(text) {
   const out = []
   const p = prose(text)
-  if (/[–—]/.test(text)) out.push('contains an em dash or en dash')
+  if (/[\u2013\u2014]/.test(text)) out.push('contains an em dash or en dash')
   // Placeholders can sit inside fences, so check the whole text. `${{ }}` is an Actions expression.
   if (/(?<!\$)\{\{[^}]*\}\}/.test(text)) out.push('unfilled {{field}} placeholder')
   else if (/(?<!\$)\{\{|\}\}/.test(withoutCode(text))) out.push('stray {{ or }} left from a placeholder')
