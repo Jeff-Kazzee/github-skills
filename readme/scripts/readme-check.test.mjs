@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { after, before, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { lint, online, quickStartCommands, quickStartScript, runQuickStart } from './readme-check.mjs'
 
@@ -183,6 +184,18 @@ test('code blocks are not prose', () => {
   assert.deepEqual(lint(text, repoDir()), [])
 })
 
+test('a GitHub Actions expression is not an unfilled field', () => {
+  const workflow = ['lantern app.log --request 42', '```', '', '```yaml', 'env:', '  GH_TOKEN: ${{ github.token }}'].join('\n')
+  const text = good().replace('lantern app.log --request 42', workflow)
+  assert.deepEqual(lint(text, repoDir()), [])
+  assert.match(lint(good().replace('You need Node 22.', 'You need {{runtime}}.'), repoDir()).join(), /unfilled/)
+})
+
+test('an autolink satisfies the documentation section', () => {
+  const text = good().replace('See [the docs](docs/index.md). The design is in [ARCHITECTURE.md](ARCHITECTURE.md).', '<https://example.test/docs>')
+  assert.deepEqual(lint(text, repoDir()), [])
+})
+
 test('reads quick start commands, dropping prompts and comments', () => {
   const text = good().replace('echo built > out.txt', '# set up\n$ echo built > out.txt')
   assert.deepEqual(quickStartCommands(text), ['echo built > out.txt', 'test -f out.txt'])
@@ -282,6 +295,22 @@ test('online fails on a heading that is gone from a linked Markdown file', async
   for (const link of ['guide.md#existing-heading', 'guide.md#twice-1', 'guide.md#custom']) assert.deepEqual(await check(link), [])
 })
 
+test('online fails on a dead autolink', async () => {
+  const text = live().replace('## Documentation', [`<${base}/gone>`, '', '## Documentation'].join('\n'))
+  assert.match((await online(text, repoDir())).join(), /HTTP 404/)
+})
+
+test('online decodes a percent-encoded local path', async () => {
+  const dir = repoDir()
+  writeFileSync(join(dir, 'User Guide.md'), ['# Start here', ''].join('\n'))
+  writeFileSync(join(dir, 'user flow.png'), PNG)
+  writeFileSync(join(dir, '100%.md'), 'x')
+  const text = live().replace('docs/index.md', 'User%20Guide.md#start-here').replace('docs/demo.png', 'user%20flow.png')
+    .replace('## Documentation', ['[full](100%.md)', '', '## Documentation'].join('\n'))
+  assert.deepEqual(await online(text, dir), [])
+  assert.match((await online(live().replace('docs/index.md', 'No%20Such.md'), dir)).join(), /missing file No%20Such\.md/)
+})
+
 test('online fails on a badge URL that serves a page', async () => {
   const text = live().replace('ci-passing-green/badge.svg', 'page-as-badge/badge.svg')
   assert.match((await online(text, repoDir())).join(), /not an image/)
@@ -323,6 +352,24 @@ test('a line that looks like a prompt stays when it is heredoc data', () => {
 test('a here-string opens no heredoc, and a tab-indented terminator closes one', () => {
   const text = good().replace('echo built > out.txt\ntest -f out.txt', "cat <<< word\ncat <<-EOF\n\tbody\n\tEOF\necho after")
   assert.deepEqual(quickStartCommands(text), ['cat <<< word', 'cat <<-EOF', 'echo after'])
+})
+
+test('a failure before the last stage of a pipeline fails the quick start', () => {
+  const text = good().replace(['echo built > out.txt', 'test -f out.txt'].join('\n'), 'false | cat')
+  assert.match(runQuickStart(text, repo('one')).join(), /failed on a fresh clone/)
+})
+
+test('the checker runs when started through a symlinked skill folder', t => {
+  const link = join(fresh(), 'scripts')
+  try {
+    symlinkSync(dirname(fileURLToPath(import.meta.url)), link, 'dir')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  const run = spawnSync(process.execPath, [join(link, 'readme-check.mjs')], { encoding: 'utf8' })
+  assert.equal(run.status, 2)
+  assert.match(run.stderr, /usage: readme-check\.mjs/)
 })
 
 test('a clone that cannot start fails', () => {

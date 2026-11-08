@@ -8,7 +8,7 @@
 // Exits 1 with one line per problem.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +28,7 @@ const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe'
 
 const withoutCode = text => text.replace(/^```[\s\S]*?^```\s*$/gm, match => match.replace(/[^\n]/g, ''))
 const withoutComments = text => text.replace(/<!--[\s\S]*?-->/g, '')
-const strip = text => text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+const strip = text => text.replace(/<(?!https?:\/\/)[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
 export function sections(text) {
   const lines = withoutCode(text).split('\n')
@@ -60,7 +60,7 @@ export function urls(text, definedIn = text) {
   ]
   const linkRefs = [...plain.matchAll(/(?<!!)\[([^\]]+)\](?:\[([^\]]*)\]|(?![(:\[]))/g)].map(m => (m[2] || m[1]).toLowerCase())
   const links = [
-    ...[...plain.matchAll(/\]\(\s*<?([^)\s>]+)/g), ...plain.matchAll(/\bhref="([^"]+)"/g)].map(m => m[1]),
+    ...[...plain.matchAll(/\]\(\s*<?([^)\s>]+)/g), ...plain.matchAll(/\bhref="([^"]+)"/g), ...plain.matchAll(/<(https?:\/\/[^\s>]+)>/g)].map(m => m[1]),
     ...linkRefs.flatMap(ref => (targets.has(ref) ? [targets.get(ref)] : [])),
     ...[...referenceTargets(text).values()].filter(url => !images.includes(url)),
     ...[...withoutCode(text).matchAll(/<!--\s*source:\s*(\S+)\s*-->/g)].map(m => m[1]),
@@ -111,7 +111,8 @@ export function lint(text, dir) {
   const problems = []
   const plain = withoutComments(withoutCode(text))
 
-  if (text.includes('{{')) problems.push('an unfilled {{field}} remains')
+  // A ${{ expr }} is a GitHub Actions expression, not a field.
+  if (/(?<!\$)\{\{/.test(text)) problems.push('an unfilled {{field}} remains')
   const titleAt = plain.split('\n').findIndex(line => /^#\s+\S/.test(line) || /<h1\b/.test(line))
   if (titleAt < 0) problems.push('no project name as an h1')
   const firstSection = plain.search(/^## /m)
@@ -244,7 +245,9 @@ export async function online(text, dir) {
       if (failure) problems.push(`${url}: ${failure}`)
     } else if (!/^(mailto:|tel:)/i.test(url)) {
       const [target, fragment] = url.split('#')
-      const path = join(dir, target.split('?')[0])
+      let file = target.split('?')[0]
+      try { file = decodeURIComponent(file) } catch {}
+      const path = join(dir, file)
       if (!existsSync(path)) problems.push(`missing file ${url}`)
       else if (images.includes(url) && !looksLikeImage(readFileSync(path))) problems.push(`${url}: not a valid image`)
       else if (fragment && /\.(md|markdown)$/i.test(path) && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
@@ -259,7 +262,7 @@ export function runQuickStart(text, source, timeoutMs = 300000) {
   const dir = mkdtempSync(join(tmpdir(), 'readme-clone-'))
   try {
     execFileSync('git', ['clone', '--quiet', '--depth', '1', source, dir], { stdio: 'pipe' })
-    const script = `set -e\n${quickStartScript(text)}`
+    const script = `set -eo pipefail\n${quickStartScript(text)}`
     const shell = existsSync(GIT_BASH) ? GIT_BASH : 'bash'
     const run = spawnSync(shell, ['-c', script], { cwd: dir, stdio: 'pipe', timeout: timeoutMs, encoding: 'utf8' })
     if (run.status === 0) return []
@@ -293,4 +296,6 @@ async function main() {
   console.log(`ok: ${file}, ${quickStartCommands(text).length} quick start commands`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main()
+// Real paths on both sides, so a checker reached through a symlinked skill folder still runs.
+const invoked = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null
+if (invoked === realpathSync(fileURLToPath(import.meta.url))) await main()
