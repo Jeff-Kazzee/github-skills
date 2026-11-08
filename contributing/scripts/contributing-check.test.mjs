@@ -496,3 +496,13 @@ test('an anchor on a folder that cannot be listed is reported, not thrown', t =>
   try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: the folder cannot be listed'))
 })
+
+test('a folder anchor uses the Markdown README when another README sits beside it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  mkdirSync(join(dir, 'guide', 'README.adoc'))
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#missing'), dir).includes('broken anchor guide/#missing'))
+})

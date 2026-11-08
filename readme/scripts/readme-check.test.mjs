@@ -506,3 +506,14 @@ test('online reports an anchor on a folder that cannot be listed, not thrown', a
   try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
   assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /cannot check guide\/#install: the folder cannot be listed/)
 })
+
+test('online uses the Markdown README for a folder anchor when another README sits beside it', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
+  mkdirSync(join(dir, 'guide', 'README.adoc'))
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#missing)'), dir)).join(), /broken anchor guide\/#missing/)
+})

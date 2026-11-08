@@ -286,7 +286,9 @@ export async function online(text, dir, root = repoRoot(dir)) {
         // A README in another format, such as README.rst, holds the anchor but is not parsed.
         let names = null
         try { names = readdirSync(path) } catch { names = null }
-        const readme = names?.find(name => /^readme(\.\w+)?$/i.test(name))
+        // Sorted, and Markdown first, so every OS picks the same README.
+        const readmes = (names ?? []).filter(name => /^readme(\.\w+)?$/i.test(name) && statSync(join(path, name)).isFile()).sort()
+        const readme = readmes.find(name => /\.(md|markdown)$/i.test(name)) ?? readmes[0]
         if (!names) problems.push(`cannot check ${url}: the folder cannot be listed`)
         else if (!readme) problems.push(`broken anchor ${url}: the folder has no README to hold it`)
         else if (/\.(md|markdown)$/i.test(readme) && !anchors(readFileSync(join(path, readme), 'utf8').replace(/\r\n/g, '\n')).has(decode(fragment))) {
