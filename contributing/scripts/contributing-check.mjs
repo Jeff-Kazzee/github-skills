@@ -394,5 +394,6 @@ async function main() {
   console.log(`ok: ${file}, ${found} sections, ${commands(sections(text).find(s => s.name === 'setting up').body).length} setup commands`)
 }
 
-// import.meta.main also covers an entry path a loader maps here. The realpath check covers a Node without it.
+// import.meta.main (Node 22.18 or later on the 22 line, or 24.2 or later) also covers an entry path a loader maps here.
+// Without it, the realpath check covers a direct `node <file>` run and a symlink, but not a loader-mapped entry.
 if (import.meta.main ?? realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) await main()

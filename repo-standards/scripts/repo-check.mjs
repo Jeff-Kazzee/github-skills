@@ -554,5 +554,6 @@ function main(argv) {
 
 // Installed copies are often links, so compare real paths.
 const invoked = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null
-// import.meta.main also covers an entry path a loader maps here. The realpath check covers a Node without it.
+// import.meta.main (Node 22.18 or later on the 22 line, or 24.2 or later) also covers an entry path a loader maps here.
+// Without it, the realpath check covers a direct `node <file>` run and a symlink, but not a loader-mapped entry.
 if (import.meta.main ?? invoked === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = main(process.argv.slice(2))
