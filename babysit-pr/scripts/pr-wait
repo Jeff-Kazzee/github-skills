@@ -10,7 +10,8 @@ Progress and errors that do not end the run go to stderr.
 
 --until
   green       required checks passed on the current head (every CI check when
-              the base branch requires none)
+              the base branch requires none, or no check at all once the head has
+              gone two minutes without one)
   ready      green, Greptile or Macroscope reviewed the current head, and no
               review thread is unresolved (default)
   any-change  stop after the first poll that prints an event
@@ -68,6 +69,9 @@ STATE_DIR = Path.home() / ".local" / "state" / "pr-wait"
 # instead of replaying hours of comments as new events.
 STALE_STATE_SECONDS = 6 * 3600
 MAX_FAILED_POLLS = 10
+# Checks can register late after a push. A PR with no CI check counts as green
+# only after its head has gone this long without one.
+NO_CI_GRACE_SECONDS = 120
 TRANSIENT = re.compile(
     r"HTTP (5\d\d|429)|rate limit|timed? ?out|connection (reset|refused)|EOF|"
     r"temporar|could not resolve host|TLS handshake|Something went wrong",
@@ -79,7 +83,7 @@ FAILED = ("fail", "cancel")
 RANK = {"fail": 4, "cancel": 3, "pending": 2, "pass": 1, "skipping": 0}
 
 QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!, $threads: String) {
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -90,7 +94,8 @@ query($owner: String!, $name: String!, $number: Int!) {
       reviews(last: 100) {
         nodes { id url state body commit { oid } author { login __typename } }
       }
-      reviewThreads(last: 100) {
+      reviewThreads(last: 100, before: $threads) {
+        pageInfo { hasPreviousPage startCursor }
         nodes {
           isResolved path line
           comments(first: 100) { nodes { id url body author { login __typename } } }
@@ -240,6 +245,10 @@ def required_checks(repo: str, base: str) -> set[str]:
         try:
             names.update(gh_lines(["api", path, "--jq", jq]))
         except GhError as error:
+            # A transient failure goes to the poll loop, which retries discovery.
+            # Treating it as no protection would let an unseen required check pass.
+            if error.transient:
+                raise
             if "HTTP 404" not in str(error):  # 404 means no protection, which is normal
                 log(f"could not read required checks from {path}: {error}")
     return names
@@ -259,6 +268,7 @@ class Watcher:
         self.events = 0
         self.required: set[str] | None = None
         self.prev_snapshot: list[tuple[str, str]] | None = None
+        self.head_since: tuple[str, float] | None = None
         self.pr_files: dict[str, set[str]] = {}
 
     def load(self) -> Json | None:
@@ -296,13 +306,22 @@ class Watcher:
         sys.exit(code)
 
     def fetch_pr(self) -> Json:
-        proc = gh([
+        # Review threads come newest first, 100 a page. Walk back through every
+        # page so an old unresolved thread still blocks ready.
+        args = [
             "api", "graphql", "-f", f"query={QUERY}",
             "-f", f"owner={self.owner}", "-f", f"name={self.name}", "-F", f"number={self.pr}",
-        ])
-        data = json.loads(proc.stdout)["data"]
+        ]
+        data = json.loads(gh(args).stdout)["data"]
         pr = data["repository"]["pullRequest"]
         pr["viewer"] = data["viewer"]["login"]
+        threads = pr["reviewThreads"]
+        info = threads["pageInfo"]
+        while info["hasPreviousPage"]:
+            older = json.loads(gh([*args, "-f", f"threads={info['startCursor']}"]).stdout)["data"]
+            page = older["repository"]["pullRequest"]["reviewThreads"]
+            threads["nodes"] = page["nodes"] + threads["nodes"]
+            info = page["pageInfo"]
         return pr
 
     def fetch_checks(self) -> dict[str, Json]:
@@ -377,8 +396,11 @@ class Watcher:
                 fail_lines.append(f"{label} failed: {name} {link}")
                 self.emit(f"fail:{head}:{name}:{link}", fail_lines[-1])
         watched = {name: c for name, c in checks.items() if bot_name(name) not in ADVISORY_BOTS}
-        gate_done = bool(gate) and all(bucket(n) != "pending" for n in gate)
-        all_done = gate_done and all(c["bucket"] != "pending" for c in watched.values())
+        if self.head_since is None or self.head_since[0] != head:
+            self.head_since = (head, time.time())
+        no_ci_settled = time.time() - self.head_since[1] >= NO_CI_GRACE_SECONDS
+        gate_done = (bool(gate) or no_ci_settled) and all(bucket(n) != "pending" for n in gate)
+        all_done = bool(gate) and gate_done and all(c["bucket"] != "pending" for c in watched.values())
         # Checks appear a few seconds after a push. Two identical polls in a row
         # guard against calling a half-registered set of checks finished.
         snapshot = sorted((name, c["bucket"]) for name, c in watched.items())
@@ -422,10 +444,15 @@ class Watcher:
             summaries = [c for c in comments if bot_name(who(c)[0]) == bot]
             own_reviews = [r for r in reviews if bot_name(who(r)[0]) == bot]
             on_head = any((r.get("commit") or {}).get("oid") == head for r in own_reviews)
+            reviewed_head = on_head or any(short in s["body"] for s in summaries)
             if own_checks:
-                done = all(c["bucket"] != "pending" for c in own_checks.values())
+                # A cancelled or skipped check ends without reviewing anything.
+                # Only a pass or fail, a review, or a summary shows the head was read.
+                done = all(c["bucket"] != "pending" for c in own_checks.values()) and (
+                    reviewed_head or any(c["bucket"] in ("pass", "fail") for c in own_checks.values())
+                )
             else:
-                done = on_head or any(short in s["body"] for s in summaries)
+                done = reviewed_head
             seen = bool(own_checks or summaries or own_reviews)
             if bot in ADVISORY_BOTS and own_checks:
                 desc = next(iter(own_checks.values()))
@@ -481,7 +508,8 @@ class Watcher:
         failed_names = sorted(name for name, c in watched.items() if c["bucket"] in FAILED)
         parts = [
             ", ".join(f"{n} {b}" for b, n in sorted(counts.items()))
-            + (f" ({', '.join(failed_names)})" if failed_names else ""),
+            + (f" ({', '.join(failed_names)})" if failed_names else "")
+            or "no checks",
             f"required {sum(bucket(n) in ('pass', 'skipping') for n in self.required)}/{len(self.required)} green"
             if self.required
             else "",

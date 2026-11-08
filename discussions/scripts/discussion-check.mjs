@@ -7,7 +7,7 @@
 // Kinds: question, idea, rfc, announcement, breaking, answer, status, to-issue, form.
 // Exits 1 with one line per problem.
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,7 +27,8 @@ export const HEADINGS = {
   breaking: [['what changed', 'what you get'], ['who is affected'], ['no action'], ['migration']],
 }
 
-const withoutCode = (text) => text.replace(/^```[\s\S]*?^```[ \t]*$/gm, (m) => m.replace(/[^\n]/g, '')).replace(/`[^`\n]*`/g, '')
+const withoutFences = (text) => text.replace(/^```[\s\S]*?^```[ \t]*$/gm, (m) => m.replace(/[^\n]/g, ''))
+const withoutCode = (text) => withoutFences(text).replace(/`[^`\n]*`/g, '')
 const withoutComments = (text) => text.replace(/<!--[\s\S]*?-->/g, '')
 const prose = (text) => withoutCode(withoutComments(text))
 
@@ -67,7 +68,8 @@ export function checkPost(text, kind) {
   }
   if (kind === 'question') {
     if (!hasFence(text)) out.push('a question needs a fenced block with the code, config or exact error')
-    if (!/\bv?\d+\.\d+(\.\d+)?\b/.test(prose(text))) out.push('a question needs the version it runs on, such as 15.2.1')
+    // A version written as inline code counts. One inside the error fence does not.
+    if (!/\bv?\d+\.\d+(\.\d+)?\b/.test(withoutFences(withoutComments(text)))) out.push('a question needs the version it runs on, such as 15.2.1')
   }
   if (kind === 'answer') {
     if (!hasFence(text) && !hasLink(text)) out.push('an answer needs a code block or a link to the doc, issue or PR behind it')
@@ -115,4 +117,4 @@ function main(argv) {
   return problems.length ? 1 : 0
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = main(process.argv.slice(2))
+if (realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) process.exitCode = main(process.argv.slice(2))

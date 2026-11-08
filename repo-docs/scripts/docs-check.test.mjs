@@ -49,7 +49,9 @@ test('a link to a missing file is reported with its line', () => {
 
 test('a link whose case differs from the file fails, as it would on GitHub', () => {
   const found = problems({ 'README.md': page('Docs', '[Guide](Guide.md)'), 'guide.md': page('Guide') })
-  assert.ok(found.some(p => p.includes('the case differs')), found.join('\n'))
+  assert.ok(found.includes('README.md:7: broken link Guide.md: the case differs from the file on disk'), found.join('\n'))
+  const folder = problems({ 'README.md': page('Docs', '[Guide](How-To/guide.md)'), 'how-to/guide.md': page('Guide') })
+  assert.ok(folder.includes('README.md:7: broken link How-To/guide.md: the case differs from the file on disk'), folder.join('\n'))
 })
 
 test('anchors follow GitHub slugs, repeats and custom ids', () => {
@@ -74,6 +76,16 @@ test('--site skips the root and .html links a site generator resolves', () => {
   const files = { 'README.md': page('Docs', '[api](/rubydoc/Formula.html) [ch](ch01.html#intro) [real](gone.md)') }
   assert.deepEqual(problems(files, { site: true }), ['README.md:7: broken link gone.md'])
   assert.equal(problems(files).length, 3)
+})
+
+test('--site reaches a folder through its index.mdx', () => {
+  const files = { 'README.md': page('Docs', '[Guide](guide/)'), 'guide/index.mdx': page('Guide') }
+  assert.deepEqual(problems(files, { site: true }), [])
+})
+
+test('--site reaches pages through the .html and root routes it skips', () => {
+  assert.deepEqual(problems({ 'README.md': page('Docs', '[Guide](guide.html)'), 'guide.md': page('Guide') }, { site: true }), [])
+  assert.deepEqual(problems({ 'README.md': page('Docs', '[Guide](/guide/)'), 'guide/index.md': page('Guide') }, { site: true }), [])
 })
 
 test('a folder with no index page is reported', () => {

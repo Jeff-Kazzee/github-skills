@@ -16,6 +16,10 @@ Read the steps you need. To fix CI only, run steps 1, 2, 4 and 8. To summarize t
 comments, run step 1 and report the list by severity and open questions. To babysit,
 run them all. Every rule traces to a row in [references/sources.md](references/sources.md).
 
+When a PR has review findings, or findings arrive after a merge, follow
+[references/findings.md](references/findings.md). Never merge with an open finding, at
+any severity, and never undo a merge by deleting files.
+
 ## 1. Read the state
 
 Read checks and threads from GitHub, not from memory:
@@ -164,7 +168,7 @@ Done when every posted comment has a URL from GitHub and matches the approved te
 Reread the live state and quote the head SHA, the checks and the mergeability. Report
 the failures you fixed in order, each thread with its answer, and what waits on whom.
 Merge only when the user asked, through `agent-git land` after Jeff approves the exact
-head. Right before a merge, run `git fetch` and recheck the PR. Never merge when it is
+head, and only when no review thread is open. Right before a merge, run `git fetch` and recheck the PR. Never merge when it is
 BEHIND or DIRTY, or when base commits that landed after the last green run touch its
 files.
 

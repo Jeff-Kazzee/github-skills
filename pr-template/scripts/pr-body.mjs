@@ -7,8 +7,9 @@
 //
 // attach pushes files to refs/pr-evidence/<task> and prints Markdown for them. That is an upload, so
 // it needs --upload-approved. check reads the body offline and sends nothing. --render posts the
-// whole body to GitHub to check its images, so use it only with approval to send that text. --pr
-// reads a PR that is already on GitHub. check exits 1 with one line per problem.
+// whole body to GitHub to check its images and its rendered sections, so use it only with approval to
+// send that text. --pr reads a PR that is already on GitHub and checks it the same way. check exits 1
+// with one line per problem.
 //
 // This file always runs. Installed copies reach it through links, so it holds no "am I the main
 // module" guard. Tests import rules.mjs.
@@ -17,7 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, extname, join, resolve } from 'node:path'
-import { classifyMedia, fail, lintSource, render, run, SECTIONS, VIDEOS } from './rules.mjs'
+import { classifyMedia, fail, lintSource, render, renderedProblems, run, SECTIONS, VIDEOS } from './rules.mjs'
 
 const IMAGES = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 const MAX_BYTES = 50 * 1024 * 1024
@@ -189,7 +190,8 @@ async function check(args) {
     if (!repo) fail('check --pr needs a signed-in gh, inside a checkout whose origin is on GitHub')
     const pr = JSON.parse(run('gh', ['pr', 'view', value('--pr'), '-R', repo, '--json', 'body,headRefOid']))
     const body = pr.body.replace(BOM, '')
-    const problems = [...lintSource(body, pr.headRefOid), ...pinProblems(await render(body, repo, true), repo)]
+    const html = await render(body, repo, true)
+    const problems = [...lintSource(body, pr.headRefOid), ...renderedProblems(html), ...pinProblems(html, repo)]
     if (problems.length > 0) fail(problems.join('\n'))
     console.log(`ok: ${SECTIONS.length} sections, head ${pr.headRefOid}`)
     return
@@ -207,6 +209,7 @@ async function check(args) {
     if (!repo) console.error('no signed-in gh or GitHub origin here, so the image check was skipped')
     console.error('sent the whole body to api.github.com to render it')
     const html = await render(body, repo, online)
+    problems.push(...renderedProblems(html))
     if (repo) problems.push(...pinProblems(html, repo))
   }
   if (problems.length > 0) fail(problems.join('\n'))

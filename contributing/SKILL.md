@@ -73,6 +73,9 @@ Run from the repo root, in the repo's checkout on `linveo-16gb` when it has one:
 node <this skill's folder>/scripts/contributing-check.mjs CONTRIBUTING.md --online --clone <repo url or path>
 ```
 
+A pointer file (no `##` headings, under 250 words) skips the section and setup rules.
+It must link the hosted guide over http, and still links the security policy.
+
 The check fails on any of these:
 
 - A missing, empty or out-of-order required section: getting help, reporting issues,

@@ -1,0 +1,36 @@
+# Runs every skill's tests on Linux and Windows for each PR and each push to dev or prod.
+# review-gate reads the run of the workflow named "ci" on the exact head, so keep this name.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev, prod]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Node tests
+        shell: bash
+        run: node --test $(ls */scripts/*.test.mjs)
+      - name: pr-wait tests
+        shell: bash
+        working-directory: babysit-pr/scripts
+        run: python -m unittest -v

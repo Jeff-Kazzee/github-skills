@@ -5,9 +5,9 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { fragmentOf, lintCases, mediaCases, repo, template } from './cases.mjs'
-import { classifyMedia, lintSource } from './rules.mjs'
+import { classifyMedia, lintSource, renderedProblems } from './rules.mjs'
 
 const golden = JSON.parse(readFileSync(new URL('./golden.json', import.meta.url), 'utf8'))
 
@@ -32,6 +32,10 @@ for (const [name, { body, pins, off, names }] of Object.entries(mediaCases)) {
     if (names) assert.equal(found.problems[0], `not on an evidence ref: ${names}`)
   })
 }
+
+test('every recorded GitHub render of the filled template shows all sections in order', () => {
+  for (const [name, { html }] of Object.entries(golden)) assert.deepEqual(renderedProblems(html), [], name)
+})
 
 test('the skill template keeps its fields, so a filled copy means something', () => {
   assert.ok(template.includes('{{'))
@@ -109,4 +113,67 @@ test('attach refuses before any network or git use without upload approval', () 
   const refused = sealed(script, 'attach', '--task', 'x', image)
   assert.equal(refused.status, 1)
   assert.match(refused.stderr, /--upload-approved/)
+})
+
+// Every gh and git call answered by a stub loaded before the script, so nothing leaves the machine.
+const STUB = `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const replies = JSON.parse(process.env.GH_STUB)
+cp.execFileSync = (cmd, args) => {
+  const call = [cmd, ...args].join(' ')
+  const reply = replies.find(([part]) => call.includes(part))
+  if (!reply) throw Object.assign(new Error('not stubbed: ' + call), { stderr: 'not stubbed: ' + call })
+  return reply[1]
+}
+syncBuiltinESMExports()
+`
+
+function postedCheck(body, html, args = ['--pr', '7']) {
+  const dir = mkdtempSync(join(tmpdir(), 'pr-body-stub-'))
+  const stub = join(dir, 'stub.mjs')
+  writeFileSync(stub, STUB)
+  const replies = [
+    ['gh auth status', ''],
+    ['git remote get-url origin', `https://github.com/${repo}.git`],
+    ['gh pr view 7', JSON.stringify({ body, headRefOid: 'a'.repeat(40) })],
+    ['gh api markdown', html],
+  ]
+  try {
+    return spawnSync(process.execPath, ['--import', pathToFileURL(stub).href, script, 'check', ...args], {
+      encoding: 'utf8', env: { ...process.env, GH_STUB: JSON.stringify(replies) },
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const h2 = names => names.map(name => `<h2 dir="auto">${name}</h2>\n<p dir="auto">filled in abc1234</p>`).join('\n')
+const ALL = ['ELI5', 'What Changed', 'Why', 'Linked Issue', 'Visual Proof', 'Testing', 'Risk', 'AI Disclosure', 'Review', 'Checklist']
+
+test('check --pr passes a body whose rendered sections all appear', () => {
+  const { body } = lintCases['full head in Testing']
+  const run = postedCheck(body, h2(ALL))
+  assert.equal(run.status, 0, run.stderr)
+})
+
+// Written by hand in the shape GitHub gives the list fence fixture: the column-zero fence opens a code
+// block that swallows every heading after it.
+test('check --pr fails when GitHub renders sections away that the offline parser finds', () => {
+  const body = lintCases['full head in Testing'].body.replace('## Risk', '- item\n\n  ```\n  code\n```\n\n## Risk')
+  assert.deepEqual(lintSource(body, 'a'.repeat(40)), [])
+  const html = `${h2(ALL.slice(0, 6))}\n<ul dir="auto">\n<li>item</li>\n</ul>\n<pre class="notranslate"><code>## Risk\n</code></pre>`
+  const run = postedCheck(body, html)
+  assert.equal(run.status, 1, run.stdout)
+  for (const name of ['Risk', 'AI Disclosure', 'Review', 'Checklist']) assert.match(run.stderr, new RegExp(`missing section on GitHub: ${name}`))
+  const rendered = postedCheck(body, html, [bodyFile(body), '--render'])
+  assert.equal(rendered.status, 1, rendered.stdout)
+  assert.match(rendered.stderr, /missing section on GitHub: Risk/)
+})
+
+test('check --pr reads headings GitHub wraps in anchors, and catches an order GitHub changed', () => {
+  const { body } = lintCases['full head in Testing']
+  const wrapped = ALL.map(name => `<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">${name}</h2><a id="user-content-x" class="anchor" href="#x"><svg></svg></a></div>`).join('\n')
+  assert.equal(postedCheck(body, wrapped).status, 0)
+  const swapped = h2(['Why', ...ALL.filter(name => name !== 'Why')])
+  assert.match(postedCheck(body, swapped).stderr, /sections out of order on GitHub/)
 })

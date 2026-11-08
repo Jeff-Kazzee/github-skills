@@ -48,6 +48,10 @@ test('a question needs a code block and a version', () => {
   assert.deepEqual(checkPost('On vite 5.4.2:\n\n```js\nexport default {}\n```', 'question'), [])
 })
 
+test('a question may give its version as inline code', () => {
+  assert.deepEqual(checkPost('On Vite `5.4.2`:\n\n```\nError: base is not set\n```', 'question'), [])
+})
+
 test('an answer that opens with a greeting fails', () => {
   const out = checkPost('Hi there\n\nSet `base` to `./`. See https://vite.dev/config/#base', 'answer')
   assert.deepEqual(out, ['lead with the cause or the fix, not a greeting'])
