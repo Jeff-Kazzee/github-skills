@@ -516,3 +516,49 @@ test('a folder anchor whose README is a dangling symlink is reported, not thrown
   }
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('broken anchor guide/#install: the folder has no README to hold it'))
 })
+
+test('a malformed fragment in a folder or file link is a broken anchor, not a throw', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#%E0%A4%A'), dir).includes('broken anchor guide/#%E0%A4%A'))
+  assert.ok(lint(good().replace('docs/style.md#naming', 'docs/style.md#%E0%A4%A'), dir).includes('broken anchor docs/style.md#%E0%A4%A'))
+})
+
+test('a folder anchor passes when any Markdown README in the folder holds it', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.markdown'), '# Guide\n')
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('a folder anchor whose README is a symlink loop is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  try { symlinkSync('README.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
+})
+
+test('a folder anchor whose README cannot be read is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide', 'README.md'), 0o000)
+  t.after(() => chmodSync(join(dir, 'guide', 'README.md'), 0o644))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still read a file after chmod 000') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: EACCES'))
+})
+
+test('a folder anchor on a folder that can be listed but not entered is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o644)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).some(p => p.startsWith('cannot check guide/#install')))
+})

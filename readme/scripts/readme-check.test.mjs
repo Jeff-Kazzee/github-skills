@@ -528,3 +528,51 @@ test('online reports a folder anchor whose README is a dangling symlink, not thr
   }
   assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /broken anchor guide\/#install: the folder has no README to hold it/)
 })
+
+const folderRepo = () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  return dir
+}
+const linkTo = target => live().replace('(ARCHITECTURE.md)', `(${target})`)
+
+test('online reports a malformed fragment in a folder link as a broken anchor', async () => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.match((await online(linkTo('guide/#%E0%A4%A'), dir)).join(), /broken anchor guide\/#%E0%A4%A/)
+})
+
+test('online passes a folder anchor when any Markdown README in the folder holds it', async () => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.markdown'), '# Guide\n')
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  assert.deepEqual(await online(linkTo('guide/#install'), dir), [])
+})
+
+test('online reports a folder anchor whose README is a symlink loop, not thrown', async t => {
+  const dir = folderRepo()
+  try { symlinkSync('README.md', join(dir, 'guide', 'README.md')) } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install/)
+})
+
+test('online reports a folder anchor whose README cannot be read, not thrown', async t => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide', 'README.md'), 0o000)
+  t.after(() => chmodSync(join(dir, 'guide', 'README.md'), 0o644))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still read a file after chmod 000') } catch {}
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install: EACCES/)
+})
+
+test('online reports a folder anchor on a folder that can be listed but not entered, not thrown', async t => {
+  const dir = folderRepo()
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o644)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readFileSync(join(dir, 'guide', 'README.md')); return t.skip('this OS or user can still enter a folder after chmod 644') } catch {}
+  assert.match((await online(linkTo('guide/#install'), dir)).join(), /cannot check guide\/#install/)
+})

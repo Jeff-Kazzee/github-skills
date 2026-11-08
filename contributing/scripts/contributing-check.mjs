@@ -132,6 +132,30 @@ export function links(text) {
 
 const anchor = heading => heading.toLowerCase().trim().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-')
 
+const decode = text => {
+  try { return decodeURIComponent(text) } catch { return text }
+}
+
+// GitHub shows a folder's README, so an anchor on a folder lands in it. The anchor passes
+// when any Markdown README in the folder holds it, so the answer does not depend on which
+// README the OS lists first. A README in another format, such as README.rst, holds the
+// anchor but is not parsed. A failure to read the folder or a README is reported, never
+// thrown, so one bad folder cannot stop the run.
+function folderAnchor(folder, anchor, url) {
+  let names
+  try { names = readdirSync(folder) } catch { return `cannot check ${url}: the folder cannot be listed` }
+  try {
+    const readmes = names.filter(name => /^readme(\.\w+)?$/i.test(name) && statSync(join(folder, name), { throwIfNoEntry: false })?.isFile())
+    if (!readmes.length) return `broken anchor ${url}: the folder has no README to hold it`
+    const markdown = readmes.filter(name => /\.(md|markdown|mdown|mkdn)$/i.test(name))
+    if (!markdown.length) return null
+    const holds = name => anchors(readFileSync(join(folder, name), 'utf8').replace(/\r\n/g, '\n')).has(anchor)
+    return markdown.some(holds) ? null : `broken anchor ${url}`
+  } catch (error) {
+    return `cannot check ${url}: ${error.code ?? error.message}`
+  }
+}
+
 function anchors(text) {
   const seen = new Map()
   const found = new Set()
@@ -161,7 +185,7 @@ const healthFile = (root, name) => HEALTH_DIRS.map(d => join(root, d, name)).fin
 // Resolves a relative link the way GitHub does: from the file's folder, or from the root for a leading slash.
 function target(url, dir, root) {
   const [path] = url.split('#')
-  const clean = decodeURIComponent(path.split('?')[0])
+  const clean = decode(path.split('?')[0])
   return clean.startsWith('/') ? join(root, clean) : join(dir, clean)
 }
 
@@ -219,7 +243,7 @@ export function lint(text, dir, root = dir) {
   const headings = anchors(text)
   for (const url of new Set(all)) {
     if (url.startsWith('#')) {
-      if (!headings.has(decodeURIComponent(url.slice(1)))) problems.push(`broken anchor ${url}`)
+      if (!headings.has(decode(url.slice(1)))) problems.push(`broken anchor ${url}`)
       continue
     }
     if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('//')) continue
@@ -227,21 +251,11 @@ export function lint(text, dir, root = dir) {
     const fragment = url.split('#')[1]
     if (!existsSync(path)) problems.push(`missing file ${url}`)
     else if (fragment && statSync(path).isFile() && /\.(md|markdown)$/i.test(path)
-      && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
+      && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decode(fragment))) {
       problems.push(`broken anchor ${url}`)
     } else if (fragment && statSync(path).isDirectory()) {
-      // GitHub shows a folder's README in any case, so the anchor lands in that file.
-      // A README in another format, such as README.rst, holds the anchor but is not parsed.
-      let names = null
-      try { names = readdirSync(path) } catch { names = null }
-      // Sorted, and Markdown first, so every OS picks the same README.
-      const readmes = (names ?? []).filter(name => /^readme(\.\w+)?$/i.test(name) && statSync(join(path, name), { throwIfNoEntry: false })?.isFile()).sort()
-      const readme = readmes.find(name => /\.(md|markdown)$/i.test(name)) ?? readmes[0]
-      if (!names) problems.push(`cannot check ${url}: the folder cannot be listed`)
-      else if (!readme) problems.push(`broken anchor ${url}: the folder has no README to hold it`)
-      else if (/\.(md|markdown)$/i.test(readme) && !anchors(readFileSync(join(path, readme), 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
-        problems.push(`broken anchor ${url}`)
-      }
+      const problem = folderAnchor(path, decode(fragment), url)
+      if (problem) problems.push(problem)
     }
   }
 
