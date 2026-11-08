@@ -97,7 +97,7 @@ Addressed the review in {{first sha}}..{{last sha}}.
 
 - {{thread link}}: {{what changed}} ({{sha}})
 - {{thread link}}: {{what changed}} ({{sha}})
-- {{thread link}}: kept as is, {{one-line reason}}. The thread is open for you.
+- {{thread link}}: kept as is, {{one-line reason}}. Resolved after Jeff's yes. Reply there with new evidence to reopen it.
 - {{thread link}}: deferred to {{issue link}}.
 
 CI: {{all required checks pass on {{head sha}} / {{check}} fails, see below}}.

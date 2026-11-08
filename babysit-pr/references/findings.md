@@ -98,7 +98,9 @@ approves the text, as step 7 of the skill says.
 
 A finding with no thread, such as one in a review summary, gets one PR comment that
 lists each such finding with its outcome and fix commit. GitHub cannot resolve it, so
-that comment is its record.
+that comment is its record. A not-reproduced finding in that comment carries its command
+and output, and it closes only after you tell Jeff what it claimed and why it does not
+hold, and he says yes, the same as a thread.
 
 Done when every finding has a reply or a line in that comment, and every thread is
 resolved.
@@ -109,7 +111,8 @@ Push, then ask for a new review of the exact head. A new finding on the new head
 again at section 2. Merge only when all of these hold on the same head:
 
 - zero unresolved threads, read with a paginated query right before the merge,
-- every finding without a thread recorded in the comment from section 5,
+- every finding without a thread recorded in the comment from section 5, and each
+  not-reproduced one there with its command, its output and Jeff's yes,
 - a review of that head with no new findings,
 - CI green on that head,
 - Jeff's approval of that head.
