@@ -231,9 +231,13 @@ export function lint(text, dir, root = dir) {
       problems.push(`broken anchor ${url}`)
     } else if (fragment && statSync(path).isDirectory()) {
       // GitHub shows a folder's README in any case, so the anchor lands in that file.
-      const readme = readdirSync(path).find(name => /^readme\.(md|markdown)$/i.test(name))
-      if (!readme) problems.push(`broken anchor ${url}: the folder has no README to hold it`)
-      else if (!anchors(readFileSync(join(path, readme), 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
+      // A README in another format, such as README.rst, holds the anchor but is not parsed.
+      let names = null
+      try { names = readdirSync(path) } catch { names = null }
+      const readme = names?.find(name => /^readme(\.\w+)?$/i.test(name))
+      if (!names) problems.push(`cannot check ${url}: the folder cannot be listed`)
+      else if (!readme) problems.push(`broken anchor ${url}: the folder has no README to hold it`)
+      else if (/\.(md|markdown)$/i.test(readme) && !anchors(readFileSync(join(path, readme), 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
         problems.push(`broken anchor ${url}`)
       }
     }

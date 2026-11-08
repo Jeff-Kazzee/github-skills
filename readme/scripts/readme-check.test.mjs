@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile, execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -486,4 +486,23 @@ test('online checks an anchor on a folder against its README, in any case', asyn
   writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
   assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
   assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#uninstall)'), dir)).join(), /broken anchor guide\/#uninstall/)
+})
+
+test('online does not report an anchor on a folder whose README is not Markdown', async () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  assert.deepEqual(await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir), [])
+})
+
+test('online reports an anchor on a folder that cannot be listed, not thrown', async t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, '.git'))
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o311)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
+  assert.match((await online(live().replace('(ARCHITECTURE.md)', '(guide/#install)'), dir)).join(), /cannot check guide\/#install: the folder cannot be listed/)
 })

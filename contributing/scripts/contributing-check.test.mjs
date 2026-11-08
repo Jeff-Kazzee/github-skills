@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -478,4 +478,21 @@ test('an anchor on a folder lands in its README, in any case', () => {
   writeFileSync(join(dir, 'guide', 'readme.md'), '# Guide\n\n## Install\n')
   assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
   assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#uninstall'), dir).includes('broken anchor guide/#uninstall'))
+})
+
+test('an anchor on a folder whose README is not Markdown is not reported', () => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.rst'), 'Guide\n=====\n')
+  assert.deepEqual(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir), [])
+})
+
+test('an anchor on a folder that cannot be listed is reported, not thrown', t => {
+  const dir = repoDir()
+  mkdirSync(join(dir, 'guide'))
+  writeFileSync(join(dir, 'guide', 'README.md'), '# Guide\n\n## Install\n')
+  chmodSync(join(dir, 'guide'), 0o311)
+  t.after(() => chmodSync(join(dir, 'guide'), 0o755))
+  try { readdirSync(join(dir, 'guide')); return t.skip('this OS or user can still list a folder after chmod 311') } catch {}
+  assert.ok(lint(good().replace('docs/style.md#naming', 'guide/#install'), dir).includes('cannot check guide/#install: the folder cannot be listed'))
 })
