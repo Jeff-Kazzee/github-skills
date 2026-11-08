@@ -60,6 +60,28 @@ export function sections(text) {
   })
 }
 
+// The heredoc a line opens: a << outside quotes, comments and arithmetic, where the shell reads one.
+function heredocOpener(line) {
+  let arithmetic = 0
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === '\\') i++
+    else if (c === "'") i = line.indexOf("'", i + 1)
+    else if (c === '"') for (i++; i < line.length && line[i] !== '"'; i++) { if (line[i] === '\\') i++ }
+    else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return null
+    else if (line.startsWith('((', i)) { arithmetic++; i++ }
+    else if (arithmetic && line.startsWith('))', i)) { arithmetic--; i++ }
+    else if (line.startsWith('<<<', i)) i += 2
+    else if (!arithmetic && line.startsWith('<<', i)) {
+      const opener = /^<<(-?)\s*(['"]?)([\w.-]+)\2/.exec(line.slice(i))
+      if (opener) return { stripTabs: opener[1] === '-', tag: opener[3] }
+      i++
+    }
+    if (i < 0) return null
+  }
+  return null
+}
+
 const blocks = body => [...body.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```\s*$/gm)].map(m => ({ lang: m[1], code: m[2] }))
 
 // The commands in a section's shell blocks. A continued line belongs to the command that opened it,
@@ -80,8 +102,7 @@ export function commands(body) {
       if (continued) out[out.length - 1] += `\n${line}`
       else out.push(line)
       continued = line.endsWith('\\')
-      const opener = /(?<!<)<<(-?)\s*(['"]?)([\w.-]+)\2/.exec(line)
-      if (opener) heredoc = { stripTabs: opener[1] === '-', tag: opener[3] }
+      heredoc = heredocOpener(line)
     }
   }
   return out
@@ -224,30 +245,47 @@ export async function online(text) {
   return problems
 }
 
+// The folder names a clone command can create: each word's last path part, minus .git.
+const cloneNames = clone => new Set(clone.trim().split(/\s+/).map(word => word.replace(/\/+$/, '').split(/[/:]/).pop().replace(/\.git$/, '')))
+
 // The setup and test commands as one script, minus the clone and the cd into it, which the runner has done.
+// A pointer file has no sections, so its commands come from the whole file.
 export function setupScript(text) {
   const found = sections(text)
+  const steps = found.length === 0 ? commands(text) : ['setting up', 'running tests'].flatMap(name => {
+    const section = found.find(s => s.name === name)
+    return section ? commands(section.body) : []
+  })
   const lines = []
   let skipCd = false
-  for (const name of ['setting up', 'running tests']) {
-    const section = found.find(s => s.name === name)
-    for (const step of section ? commands(section.body) : []) {
-      if (CLONE.test(step)) {
-        // A clone chained with && or a semicolon keeps what follows it, minus a cd straight after the clone.
-        // Join backslash continuations first, so a wrapped clone line reads as one command.
-        const joined = step.replace(/\\\r?\n\s*/g, ' ')
-        const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
-        if (rest === joined) { skipCd = true; continue }
-        const tail = rest.replace(/^cd\s+[^\s;&|]+\s*(?:(?:&&|;)\s*|$)/, '')
-        // A clone that ends its line with && leaves no command, so the cd may be the next step.
-        if (tail) lines.push(tail)
-        skipCd = !rest.trim()
-        continue
+  for (const step of steps) {
+    if (CLONE.test(step)) {
+      // A clone chained with && or a semicolon keeps what follows it, minus the first cd into the clone.
+      // Join backslash continuations first, so a wrapped clone line reads as one command.
+      const joined = step.replace(/\\\r?\n\s*/g, ' ')
+      const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
+      if (rest === joined) { skipCd = true; continue }
+      const names = cloneNames(/^[^;&|]*/.exec(joined)[0])
+      // Only the first line holds the chain. Any later line is a heredoc body, kept as it is.
+      const chain = rest.split('\n')[0]
+      const cd = [...chain.matchAll(/(^|\s*(?:&&|;)\s*)cd\s+([^\s;&|'"]+)(?=\s*(?:&&|;|$))/g)]
+        .find(m => names.has(m[2].replace(/^\.\//, '').split('/')[0]))
+      let tail = rest
+      if (cd) {
+        const end = cd.index + cd[0].length
+        // A cd below the clone, such as lantern/packages/core, keeps the part under the clone.
+        const below = cd[2].replace(/^\.\//, '').split('/').slice(1).join('/').replace(/\/+$/, '')
+        if (below) tail = `${rest.slice(0, cd.index)}${cd[1]}cd ${below}${rest.slice(end)}`
+        else tail = cd[1] ? rest.slice(0, cd.index) + rest.slice(end) : rest.slice(end).replace(/^\s*(?:&&|;)\s*/, '')
       }
-      if (skipCd && /^cd\s+\S+$/.test(step)) { skipCd = false; continue }
-      skipCd = false
-      lines.push(step)
+      if (tail.trim()) lines.push(tail)
+      // With no cd into the clone in the chain, as when the clone line ends with &&, the cd may be the next step.
+      skipCd = !cd
+      continue
     }
+    if (skipCd && /^cd\s+\S+$/.test(step)) { skipCd = false; continue }
+    skipCd = false
+    lines.push(step)
   }
   return lines.join('\n')
 }
@@ -283,17 +321,19 @@ async function main() {
   const problems = lint(text, dir, root)
   if (args.includes('--online')) problems.push(...await online(text))
   const pointer = isPointer(text)
-  if (valueOf('--clone') && problems.length === 0 && !pointer) problems.push(...runSetup(text, valueOf('--clone')))
+  const runs = Boolean(valueOf('--clone')) && (!pointer || commands(text).length > 0)
+  if (runs && problems.length === 0) problems.push(...runSetup(text, valueOf('--clone')))
   if (problems.length > 0) {
     console.error(problems.join('\n'))
     process.exit(1)
   }
   if (pointer) {
-    console.log(`ok: ${file}, a pointer file, so no setup was run`)
+    console.log(runs ? `ok: ${file}, a pointer file, and its commands ran on a fresh clone` : `ok: ${file}, a pointer file, so no setup was run`)
     return
   }
   const found = sections(text).filter(s => s.name).length
   console.log(`ok: ${file}, ${found} sections, ${commands(sections(text).find(s => s.name === 'setting up').body).length} setup commands`)
 }
 
-if (realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) await main()
+// import.meta.main also covers an entry path a loader maps here. The realpath check covers a Node without it.
+if (import.meta.main ?? realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null)) await main()
