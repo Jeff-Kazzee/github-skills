@@ -74,8 +74,13 @@ class FakeGitHub:
     """Answers the gh calls pr-wait makes, from plain Python data."""
 
     def __init__(self, checks=None, reviews=None, thread_pages=None, rules=None, max_polls=12,
-                 checks_from_poll=1, workflows=None):
+                 checks_from_poll=1, workflows=None, comments=None, pages_from_poll=None):
         self.checks = checks or []
+        self.comments = comments or []
+        # Thread pages that replace thread_pages from a given poll on, as {poll: pages}.
+        self.pages_from_poll = pages_from_poll or {}
+        # GraphQL calls that read an older page of review threads.
+        self.older_page_calls = 0
         # Checks register late: gh pr checks reports none before this poll.
         self.checks_from_poll = checks_from_poll
         # Workflow files at the head, path to YAML text. None means no .github/workflows.
@@ -134,8 +139,14 @@ class FakeGitHub:
             self.polls += 1
             if self.polls > self.max_polls:
                 raise PollLimit()
+        else:
+            self.older_page_calls += 1
+        pages = self.thread_pages
+        for poll in sorted(self.pages_from_poll):
+            if self.polls >= poll:
+                pages = self.pages_from_poll[poll]
         index = 0 if cursor is None else int(cursor.removeprefix("page"))
-        has_older = index + 1 < len(self.thread_pages)
+        has_older = index + 1 < len(pages)
         pr = {
             "url": f"https://github.com/{REPO}/pull/{PR}",
             "state": "OPEN",
@@ -144,11 +155,11 @@ class FakeGitHub:
             "mergeStateStatus": "CLEAN",
             "author": {"login": "jeff", "__typename": "User"},
             "baseRef": {"target": {"oid": BASE_OID}},
-            "comments": {"nodes": []},
+            "comments": {"nodes": self.comments},
             "reviews": {"nodes": self.reviews},
             "reviewThreads": {
                 "pageInfo": {"hasPreviousPage": has_older, "startCursor": f"page{index + 1}" if has_older else None},
-                "nodes": self.thread_pages[index],
+                "nodes": pages[index],
             },
         }
         body = {"data": {"viewer": {"login": "jeff"}, "repository": {"pullRequest": pr}}}
@@ -244,6 +255,120 @@ class ReviewThreadPagination(unittest.TestCase):
             reviews=[greptile_review()],
             thread_pages=[[thread(True, "new")], [thread(True, "old")]],
         )
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertTrue(run.lines[-1].startswith(f"#{PR} ready on"), run.lines)
+
+
+def with_reply(item: dict, ident: str) -> dict:
+    reply = dict(item["comments"]["nodes"][0], id=ident, url=f"https://github.com/{REPO}/pull/{PR}#discussion_{ident}")
+    return dict(item, comments={"nodes": [*item["comments"]["nodes"], reply]})
+
+
+class ThreadScanBudget(unittest.TestCase):
+    """F62: older thread pages are read on the baseline and at the ready decision, not every poll."""
+
+    def test_green_run_reads_older_pages_only_on_the_baseline_poll(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pending")],
+            thread_pages=[[thread(True, "new")], [thread(True, "old")]],
+            max_polls=5,
+        )
+        run = watch(fake, until="green")
+        self.assertIsNone(run.code, run.lines)
+        self.assertEqual(fake.older_page_calls, 1)
+
+    def test_ready_run_reads_older_pages_on_the_baseline_and_the_decision(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=6, reviews=[greptile_review()],
+            thread_pages=[[thread(True, "new")], [thread(True, "mid")], [thread(True, "old")]],
+            max_polls=30,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertGreaterEqual(fake.polls, 7)
+        self.assertEqual(fake.older_page_calls, 4)
+
+    def test_older_threads_from_the_baseline_are_not_reported_as_new(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=6, reviews=[greptile_review()],
+            thread_pages=[[thread(True, "new")], [thread(True, "old")]],
+            max_polls=30,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertFalse(any("new thread from" in line for line in run.lines), run.lines)
+
+    def test_older_thread_reopened_after_the_baseline_blocks_ready(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=6, reviews=[greptile_review()],
+            thread_pages=[[thread(True, "new")], [thread(True, "old")]],
+            pages_from_poll={3: [[thread(True, "new")], [thread(False, "old")]]},
+            max_polls=30,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 1, run.lines)
+        self.assertIn("discussion_old", run.lines[-1])
+
+    def test_reply_on_an_older_thread_is_reported_before_ready(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=6, reviews=[greptile_review()],
+            thread_pages=[[thread(True, "new")], [thread(True, "old")]],
+            pages_from_poll={3: [[thread(True, "new")], [with_reply(thread(True, "old"), "oldreply")]]},
+            max_polls=30,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        replies = [line for line in run.lines if "thread reply from reviewer" in line]
+        self.assertEqual(len(replies), 1, run.lines)
+        self.assertIn("discussion_oldreply", replies[0])
+
+    def test_blocked_line_counts_unresolved_threads_on_every_page(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=6, reviews=[greptile_review()],
+            thread_pages=[[thread(False, "new")], [thread(False, "old")]],
+            max_polls=30,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 1, run.lines)
+        self.assertIn("blocked by 2 unresolved threads", run.lines[-1])
+        self.assertIn("discussion_new", run.lines[-1])
+        self.assertIn("discussion_old", run.lines[-1])
+
+
+class FailedBotCheck(unittest.TestCase):
+    """F71: a failed gating bot check may mean the bot errored, so it alone is not a review."""
+
+    def test_failed_greptile_check_alone_is_not_a_review(self):
+        fake = FakeGitHub(checks=[check("build", "pass"), check("Greptile Review", "fail")])
+        run = watch(fake)
+        self.assertNotEqual(run.code, 0, run.lines)
+
+    def test_failed_greptile_check_without_a_review_prints_one_line(self):
+        fake = FakeGitHub(checks=[check("build", "pass"), check("Greptile Review", "fail")], checks_from_poll=2)
+        run = watch(fake)
+        hits = [line for line in run.lines if "greptile check failed on abc1234 with no review" in line]
+        self.assertEqual(len(hits), 1, run.lines)
+        self.assertIn("https://ci.example/Greptile Review", hits[0])
+        self.assertFalse(any("greptile finished" in line for line in run.lines), run.lines)
+
+    def test_failed_greptile_check_with_a_review_on_the_head_is_a_review(self):
+        fake = FakeGitHub(
+            checks=[check("build", "pass"), check("Greptile Review", "fail")],
+            reviews=[greptile_review()],
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertTrue(run.lines[-1].startswith(f"#{PR} ready on"), run.lines)
+
+    def test_failed_greptile_check_with_a_summary_naming_the_head_is_a_review(self):
+        summary = {
+            "id": "sum1",
+            "url": f"https://github.com/{REPO}/pull/{PR}#issuecomment-1",
+            "body": f"Greptile summary for {HEAD[:7]}: 2 issues found",
+            "author": {"login": "greptile-apps", "__typename": "Bot"},
+        }
+        fake = FakeGitHub(checks=[check("build", "pass"), check("Greptile Review", "fail")], comments=[summary])
         run = watch(fake)
         self.assertEqual(run.code, 0, run.lines)
         self.assertTrue(run.lines[-1].startswith(f"#{PR} ready on"), run.lines)

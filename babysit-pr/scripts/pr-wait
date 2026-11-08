@@ -33,6 +33,7 @@ Events
     PR author or the gh user
   - Greptile, Macroscope, or CodeRabbit finished on the head, or a Greptile or
     Macroscope summary changed after that
+  - a Greptile or Macroscope check failed with no review or summary of the head
   - the base branch moved and the new commits touch files in this PR
   - merge state became BEHIND or DIRTY
   - the PR merged or closed
@@ -400,24 +401,45 @@ class Watcher:
         self.save()
         sys.exit(code)
 
-    def fetch_pr(self) -> Json:
-        # Review threads come newest first, 100 a page. Walk back through every
-        # page so an old unresolved thread still blocks ready.
-        args = [
+    def query_args(self) -> list[str]:
+        return [
             "api", "graphql", "-f", f"query={QUERY}",
             "-f", f"owner={self.owner}", "-f", f"name={self.name}", "-F", f"number={self.pr}",
         ]
-        data = json.loads(gh(args).stdout)["data"]
+
+    def fetch_pr(self) -> Json:
+        # Review threads come newest first, 100 a page. A poll reads only the
+        # newest page. poll() reads the older pages when it needs every thread.
+        data = json.loads(gh(self.query_args()).stdout)["data"]
         pr = data["repository"]["pullRequest"]
         pr["viewer"] = data["viewer"]["login"]
-        threads = pr["reviewThreads"]
-        info = threads["pageInfo"]
-        while info["hasPreviousPage"]:
-            older = json.loads(gh([*args, "-f", f"threads={info['startCursor']}"]).stdout)["data"]
-            page = older["repository"]["pullRequest"]["reviewThreads"]
-            threads["nodes"] = page["nodes"] + threads["nodes"]
-            info = page["pageInfo"]
         return pr
+
+    def older_threads(self, info: Json) -> list[Json]:
+        """Every review thread older than the newest page, read fresh from GitHub."""
+        nodes: list[Json] = []
+        while info["hasPreviousPage"]:
+            older = json.loads(gh([*self.query_args(), "-f", f"threads={info['startCursor']}"]).stdout)["data"]
+            page = older["repository"]["pullRequest"]["reviewThreads"]
+            nodes = page["nodes"] + nodes
+            info = page["pageInfo"]
+        return nodes
+
+    def scan_threads(self, threads: list[Json], mine: set[str]) -> list[str]:
+        """Report new thread comments and return the unresolved thread URLs."""
+        unresolved: list[str] = []
+        for thread in threads:
+            nodes = thread["comments"]["nodes"]
+            if not thread["isResolved"] and nodes:
+                unresolved.append(nodes[0]["url"])
+            where = f"{thread['path']}:{thread['line']}" if thread["line"] else thread["path"]
+            for index, comment in enumerate(nodes):
+                login, _ = who(comment)
+                if login in mine:
+                    continue
+                kind = "new thread" if index == 0 else "thread reply"
+                self.emit(f"c:{comment['id']}", f"{kind} from {login} on {where}: {snippet(comment['body'])} {comment['url']}")
+        return unresolved
 
     def fetch_checks(self) -> dict[str, Json]:
         # gh pr checks exits 8 while checks are pending and 1 when one failed.
@@ -474,6 +496,14 @@ class Watcher:
         comments = pr["comments"]["nodes"]
         reviews = pr["reviews"]["nodes"]
         threads = pr["reviewThreads"]["nodes"]
+        # Older thread pages are read on the baseline poll, so their comments are
+        # recorded and not reported later as new, and again right before ready.
+        older_info: Json | None = pr["reviewThreads"]["pageInfo"]
+        if not older_info["hasPreviousPage"]:
+            older_info = None
+        elif self.baseline:
+            threads = self.older_threads(older_info) + threads
+            older_info = None
         self.events = 0
 
         # Required checks. With no required checks configured, every CI check
@@ -523,18 +553,7 @@ class Watcher:
             if review["state"] in ("APPROVED", "CHANGES_REQUESTED") or review["body"].strip():
                 state = review["state"].lower().replace("_", " ")
                 self.emit(f"c:{review['id']}", f"review from {login} ({state}): {snippet(review['body'])} {review['url']}")
-        unresolved: list[str] = []
-        for thread in threads:
-            nodes = thread["comments"]["nodes"]
-            if not thread["isResolved"] and nodes:
-                unresolved.append(nodes[0]["url"])
-            where = f"{thread['path']}:{thread['line']}" if thread["line"] else thread["path"]
-            for index, comment in enumerate(nodes):
-                login, _ = who(comment)
-                if login in mine:
-                    continue
-                kind = "new thread" if index == 0 else "thread reply"
-                self.emit(f"c:{comment['id']}", f"{kind} from {login} on {where}: {snippet(comment['body'])} {comment['url']}")
+        unresolved = self.scan_threads(threads, mine)
 
         # Review bots on the current head. A bot with checks is done when they
         # finish. Otherwise it is done once it reviews the head commit or its
@@ -547,26 +566,35 @@ class Watcher:
             own_reviews = [r for r in reviews if bot_name(who(r)[0]) == bot]
             on_head = any((r.get("commit") or {}).get("oid") == head for r in own_reviews)
             reviewed_head = on_head or any(short in s["body"] for s in summaries)
+            settled = bool(own_checks) and all(c["bucket"] != "pending" for c in own_checks.values())
+            failed = [name for name, c in own_checks.items() if c["bucket"] in FAILED]
             if own_checks:
-                # A cancelled or skipped check ends without reviewing anything.
-                # Only a pass or fail, a review, or a summary shows the head was read.
-                done = all(c["bucket"] != "pending" for c in own_checks.values()) and (
-                    reviewed_head or any(c["bucket"] in ("pass", "fail") for c in own_checks.values())
-                )
+                # A cancelled or skipped check ends without reviewing anything. A
+                # failed check can mean the bot errored, so it proves nothing alone.
+                # Only a pass, a review, or a summary shows the head was read.
+                done = settled and (reviewed_head or any(c["bucket"] == "pass" for c in own_checks.values()))
             else:
                 done = reviewed_head
+            errored = settled and not done and bool(failed)
             seen = bool(own_checks or summaries or own_reviews)
             if bot in ADVISORY_BOTS and own_checks:
                 desc = next(iter(own_checks.values()))
                 bot_status[bot] = f"{bot} {desc['description'] or desc['bucket']} (advisory)"
             elif seen:
-                bot_status[bot] = f"{bot} {'done' if done else 'pending'}{' (advisory)' if bot in ADVISORY_BOTS else ''}"
+                word = "done" if done else "check failed with no review" if errored else "pending"
+                bot_status[bot] = f"{bot} {word}{' (advisory)' if bot in ADVISORY_BOTS else ''}"
+            if errored and bot in GATING_BOTS:
+                links = " ".join(own_checks[name]["link"] for name in failed)
+                self.emit(
+                    f"botfail:{bot}:{head}",
+                    f"{bot} check failed on {short} with no review or summary of the head, "
+                    f"so it may have errored: {', '.join(failed)} {links}",
+                )
             key = f"bot:{bot}:{head}"
             was_done = key in self.reported
             if done:
                 if bot in GATING_BOTS:
                     reviewed.append(bot)
-                failed = [name for name, c in own_checks.items() if c["bucket"] in FAILED]
                 detail = "; ".join(filter(None, [
                     next((v for v in map(verdict, (s["body"] for s in summaries)) if v), ""),
                     f"failed: {', '.join(failed)}" if failed else "",
@@ -603,6 +631,12 @@ class Watcher:
                 self.emit(f"merge:{merge_state}:{head}:{base_oid}", line)
             self.state["merge_state"] = merge_state
 
+        # The ready decision ends the run, so it can afford a fresh read of every
+        # thread page. A cached page could miss a thread reopened since.
+        if older_info and self.until == "ready" and green and reviewed:
+            unresolved = self.scan_threads(self.older_threads(older_info), mine) + unresolved
+            older_info = None
+
         # One summary line per head once all checks finish.
         counts: dict[str, int] = {}
         for c in watched.values():
@@ -618,7 +652,7 @@ class Watcher:
             else "",
             ", ".join(bot_status[b] for b in GATING_BOTS + ADVISORY_BOTS if b in bot_status)
             or "no Greptile or Macroscope yet",
-            f"{len(unresolved)} unresolved threads",
+            f"{len(unresolved)} unresolved threads{' in the newest 100' if older_info else ''}",
             f"merge state {merge_state}",
         ]
         summary = "; ".join(p for p in parts if p)
