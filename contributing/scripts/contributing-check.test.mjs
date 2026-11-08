@@ -269,3 +269,11 @@ test('a clone wrapped with line continuations still drops its cd', () => {
   assert.doesNotMatch(setupScript(text), /cd lantern/)
   assert.deepEqual(runSetup(text, repo()), [])
 })
+
+test('a clone line that ends with && still drops the cd on the next line', () => {
+  const nl = String.fromCharCode(10)
+  const text = good().replace(`git clone https://github.com/example/lantern.git${nl}cd lantern${nl}`, `git clone https://github.com/example/lantern.git &&${nl}cd lantern${nl}`)
+  assert.ok(text.includes(`lantern.git &&${nl}cd lantern`))
+  assert.doesNotMatch(setupScript(text), /cd lantern/)
+  assert.deepEqual(runSetup(text, repo()), [])
+})

@@ -239,8 +239,9 @@ export function setupScript(text) {
         const rest = joined.replace(/^[^;&|]*(?:&&|;)\s*/, '')
         if (rest === joined) { skipCd = true; continue }
         const tail = rest.replace(/^cd\s+[^\s;&|]+\s*(?:(?:&&|;)\s*|$)/, '')
+        // A clone that ends its line with && leaves no command, so the cd may be the next step.
         if (tail) lines.push(tail)
-        skipCd = false
+        skipCd = !rest.trim()
         continue
       }
       if (skipCd && /^cd\s+\S+$/.test(step)) { skipCd = false; continue }
