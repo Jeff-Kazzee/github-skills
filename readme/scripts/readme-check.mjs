@@ -4,6 +4,7 @@
 //   node readme-check.mjs README.md                     rules that need no network
 //   node readme-check.mjs README.md --online            also every link, image and badge
 //   node readme-check.mjs README.md --clone <repo>      also runs the quick start on a fresh clone
+//   --root <dir>   the repo root for --online, when the file is not under a .git folder
 //
 // Exits 1 with one line per problem.
 
@@ -254,11 +255,17 @@ function repoRoot(dir) {
   }
 }
 
-export async function online(text, dir) {
+// The root comes from the caller when the tree has no .git folder, such as an archive export.
+export async function online(text, dir, root = repoRoot(dir)) {
   const problems = []
   const { links, images } = urls(text)
   const headings = anchors(text)
-  const root = repoRoot(dir)
+  // A symlink can point outside the repository, so an existing path is compared by its real path.
+  const realRoot = existsSync(root) ? realpathSync(root) : root
+  const outside = path => {
+    const fromRoot = existsSync(path) ? relative(realRoot, realpathSync(path)) : relative(root, path)
+    return fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)
+  }
   for (const url of new Set([...links, ...images])) {
     if (url.startsWith('#')) {
       if (!headings.has(decode(url.slice(1)))) problems.push(`broken anchor ${url}`)
@@ -268,8 +275,7 @@ export async function online(text, dir) {
     } else if (!/^(mailto:|tel:)/i.test(url)) {
       const [target, fragment] = url.split('#')
       const path = join(dir, decode(target.split('?')[0]))
-      const fromRoot = relative(root, path)
-      if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) problems.push(`${url}: outside the repository`)
+      if (outside(path)) problems.push(`${url}: outside the repository`)
       else if (!existsSync(path)) problems.push(`missing file ${url}`)
       else if (images.includes(url) && !looksLikeImage(readFileSync(path))) problems.push(`${url}: not a valid image`)
       else if (fragment && /\.(md|markdown)$/i.test(path) && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decode(fragment))) {
@@ -322,16 +328,18 @@ export function runQuickStart(text, source, timeoutMs = 300000) {
 
 async function main() {
   const args = process.argv.slice(2)
-  const file = args.find(arg => !arg.startsWith('--'))
-  if (!file || (args.includes('--clone') && args.at(-1) === '--clone')) {
-    console.error('usage: readme-check.mjs README.md [--online] [--clone <repo>]')
+  const valueOf = flag => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
+  const values = new Set([valueOf('--clone'), valueOf('--root')])
+  const file = args.find(arg => !arg.startsWith('--') && !values.has(arg))
+  if (!file || (args.includes('--clone') && !valueOf('--clone')) || (args.includes('--root') && !valueOf('--root'))) {
+    console.error('usage: readme-check.mjs README.md [--online] [--clone <repo>] [--root <dir>]')
     process.exit(2)
   }
   const path = resolve(file)
   const text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   const dir = dirname(path)
   const problems = lint(text, dir)
-  if (args.includes('--online')) problems.push(...await online(text, dir))
+  if (args.includes('--online')) problems.push(...await online(text, dir, valueOf('--root') ? resolve(valueOf('--root')) : undefined))
   if (args.includes('--clone') && problems.length === 0) {
     problems.push(...runQuickStart(text, args[args.indexOf('--clone') + 1]))
   }

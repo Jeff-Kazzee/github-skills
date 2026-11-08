@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -427,4 +427,37 @@ test('the checker runs when started through a symlinked skill folder', t => {
 
 test('a clone that cannot start fails', () => {
   assert.match(runQuickStart(good(), 'file:///no/such/repo').join(), /could not clone/)
+})
+
+test('online rejects a symlink in the repository that points outside it', async t => {
+  const outer = fresh()
+  const dir = repoDir(join(outer, 'repo'))
+  mkdirSync(join(dir, '.git'))
+  writeFileSync(join(outer, 'secret.png'), PNG)
+  try {
+    symlinkSync(join(outer, 'secret.png'), join(dir, 'docs', 'linked.png'))
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  assert.match((await online(live().replace('docs/demo.png', 'docs/linked.png'), dir)).join(), /outside the repository/)
+})
+
+test('online takes an explicit root for a tree with no .git folder', async () => {
+  const root = repoDir()
+  const dir = repoDir(join(root, 'sub'))
+  writeFileSync(join(root, 'shot.png'), PNG)
+  const text = live().replace('docs/demo.png', '../shot.png')
+  assert.match((await online(text, dir)).join(), /outside the repository/)
+  assert.deepEqual(await online(text, dir, root), [])
+})
+
+test('the command line reads --root as the repository root', async () => {
+  const root = repoDir()
+  const dir = repoDir(join(root, 'sub'))
+  writeFileSync(join(root, 'shot.png'), PNG)
+  writeFileSync(join(dir, 'README.md'), live().replace('docs/demo.png', '../shot.png'))
+  const checker = join(dirname(fileURLToPath(import.meta.url)), 'readme-check.mjs')
+  const run = await new Promise(done => execFile(process.execPath, [checker, '--root', root, join(dir, 'README.md'), '--online'], (error, stdout, stderr) => done({ code: error?.code ?? 0, stderr })))
+  assert.equal(run.code, 0, run.stderr)
 })
