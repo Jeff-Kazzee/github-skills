@@ -5,6 +5,7 @@ Run from this folder with `python -m unittest`.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -72,8 +73,14 @@ def check(name: str, bucket: str) -> dict:
 class FakeGitHub:
     """Answers the gh calls pr-wait makes, from plain Python data."""
 
-    def __init__(self, checks=None, reviews=None, thread_pages=None, rules=None, max_polls=12):
+    def __init__(self, checks=None, reviews=None, thread_pages=None, rules=None, max_polls=12,
+                 checks_from_poll=1, workflows=None):
         self.checks = checks or []
+        # Checks register late: gh pr checks reports none before this poll.
+        self.checks_from_poll = checks_from_poll
+        # Workflow files at the head, path to YAML text. None means no .github/workflows.
+        self.workflows = workflows
+        self.workflow_calls = 0
         self.reviews = reviews or []
         # Pages of review threads, newest page first, as GitHub returns them for last/before.
         self.thread_pages = thread_pages or [[]]
@@ -88,9 +95,11 @@ class FakeGitHub:
         if args[:2] == ["api", "graphql"]:
             return self.graphql(args)
         if args[:2] == ["pr", "checks"]:
-            if not self.checks:
+            if not self.checks or self.polls < self.checks_from_poll:
                 return self.done("", "no checks reported on the 'feature' branch", 1)
             return self.done(json.dumps(self.checks))
+        if args[0] == "api" and "/contents/.github/workflows" in args[1]:
+            return self.contents(args[1])
         if args[0] == "api" and "/rules/branches/" in args[1]:
             result = self.rules[min(self.rules_calls, len(self.rules) - 1)]
             self.rules_calls += 1
@@ -102,6 +111,18 @@ class FakeGitHub:
         if args[0] == "api" and "/compare/" in args[1]:
             return self.done("0")
         raise AssertionError(f"unexpected gh call: {args}")
+
+    def contents(self, path):
+        """The contents API: a directory listing (paths, as the --jq selects them)
+        or one file (base64, as GitHub returns it). Both pin the head commit."""
+        assert path.endswith(f"?ref={HEAD}"), path
+        self.workflow_calls += 1
+        if self.workflows is None:
+            raise pr_wait.GhError("HTTP 404: Not Found", False)
+        target = path.split("/contents/", 1)[1].split("?", 1)[0]
+        if target == ".github/workflows":
+            return self.done("\n".join(sorted(self.workflows)))
+        return self.done(base64.b64encode(self.workflows[target].encode()).decode())
 
     @staticmethod
     def done(stdout, stderr="", code=0):
@@ -277,6 +298,115 @@ class NoCiChecks(unittest.TestCase):
         fake = FakeGitHub(checks=[], max_polls=3)
         run = watch(fake, until="any-change")
         self.assertFalse(any("checks finished" in line for line in run.lines), run.lines)
+
+
+PR_WORKFLOW = "on:\n  pull_request:\n    branches: [dev]\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+PUSH_WORKFLOW = "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+CRON_WORKFLOW = (
+    "# Never runs for a push or a pull_request.\non:\n  schedule:\n    - cron: '0 3 * * *'\n"
+    "  workflow_dispatch:\njobs:\n  nightly:\n    runs-on: ubuntu-latest\n"
+)
+
+
+class LateCiChecks(unittest.TestCase):
+    """F54: the no-CI timer alone is not proof that a repo has no CI."""
+
+    def test_pr_workflow_waits_for_checks_that_register_after_the_grace_period(self):
+        # Poll 10 runs at 180 seconds of fake time, past the 120 second grace.
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=10,
+            workflows={".github/workflows/ci.yml": PR_WORKFLOW}, max_polls=30,
+        )
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertIn("1 pass", run.lines[-1])
+        self.assertGreaterEqual(fake.polls, 10, run.lines)
+
+    def test_pr_workflow_whose_checks_never_appear_exits_1_with_a_hint(self):
+        fake = FakeGitHub(checks=[], workflows={".github/workflows/ci.yml": PR_WORKFLOW}, max_polls=200)
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 1, run.lines)
+        self.assertIn("no checks appeared", run.lines[-1])
+        self.assertIn(".github/workflows/ci.yml", run.lines[-1])
+        self.assertGreaterEqual(run.clock.now - 1_000_000.0, pr_wait.NO_CHECKS_TIMEOUT_SECONDS)
+
+    def test_pr_workflow_blocks_ready_for_a_bot_only_check_set(self):
+        fake = FakeGitHub(
+            checks=[check("Greptile Review", "pass")], reviews=[greptile_review()],
+            workflows={".github/workflows/ci.yml": PR_WORKFLOW}, max_polls=200,
+        )
+        run = watch(fake)
+        self.assertEqual(run.code, 1, run.lines)
+        self.assertIn("no checks appeared", run.lines[-1])
+
+    def test_bot_only_ready_line_says_no_ci_configured(self):
+        fake = FakeGitHub(checks=[check("Greptile Review", "pass")], reviews=[greptile_review()], max_polls=30)
+        run = watch(fake)
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertIn("no CI configured", run.lines[-1])
+
+    def test_no_workflows_says_no_ci_configured(self):
+        fake = FakeGitHub(checks=[], max_polls=30)
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertIn("no CI configured", run.lines[-1])
+
+    def test_push_workflow_waits_for_checks_that_register_after_the_grace_period(self):
+        # gh pr checks lists push runs on the head too, so they register late the same way.
+        fake = FakeGitHub(
+            checks=[check("build", "pass")], checks_from_poll=10,
+            workflows={".github/workflows/ci.yml": PUSH_WORKFLOW}, max_polls=30,
+        )
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertIn("1 pass", run.lines[-1])
+
+    def test_push_workflow_whose_checks_never_appear_exits_1(self):
+        fake = FakeGitHub(checks=[], workflows={".github/workflows/ci.yml": PUSH_WORKFLOW}, max_polls=200)
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 1, run.lines)
+        self.assertIn("no checks appeared", run.lines[-1])
+
+    def test_schedule_only_workflow_takes_the_no_ci_path(self):
+        fake = FakeGitHub(checks=[], workflows={".github/workflows/nightly.yml": CRON_WORKFLOW}, max_polls=30)
+        run = watch(fake, until="green")
+        self.assertEqual(run.code, 0, run.lines)
+        self.assertIn("no CI configured", run.lines[-1])
+
+    def test_trigger_forms_that_run_on_pull_requests(self):
+        for text in (
+            "on: pull_request\n",
+            "on: [push, pull_request]\n",
+            "on: [push]\n",
+            chr(0xFEFF) + "on: push\n",
+            '"on":\n  pull_request_target:\n',
+            "on:\n- push\n- pull_request\njobs: {}\n",
+            "name: ci\non:\n  push:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n",
+        ):
+            self.assertTrue(pr_wait.triggers_on_pr(text), text)
+
+    def test_pull_request_outside_the_on_block_does_not_count(self):
+        for text in (
+            "on: workflow_dispatch\njobs:\n  a:\n    if: github.event_name == 'pull_request'\n",
+            "on: workflow_dispatch  # push and pull_request runs live elsewhere\njobs: {}\n",
+            CRON_WORKFLOW,
+            "on:\n  pull_request_review:\njobs: {}\n",
+            "jobs:\n  a:\n    steps: [pull_request]\n",
+        ):
+            self.assertFalse(pr_wait.triggers_on_pr(text), text)
+
+    def test_event_words_inside_inputs_do_not_count(self):
+        for text in (
+            "on:\n  workflow_dispatch:\n    inputs:\n      mode:\n        description: 'Choose whether to push the release'\njobs: {}\n",
+            "on:\n  workflow_dispatch:\n    inputs:\n      push:\n        type: boolean\njobs: {}\n",
+            "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n    inputs:\n      target:\n        default: pull_request\njobs: {}\n",
+        ):
+            self.assertFalse(pr_wait.triggers_on_pr(text), text)
+
+    def test_workflows_are_read_once_per_head(self):
+        fake = FakeGitHub(checks=[], workflows={".github/workflows/nightly.yml": CRON_WORKFLOW}, max_polls=30)
+        watch(fake, until="green")
+        self.assertEqual(fake.workflow_calls, 2)
 
 
 if __name__ == "__main__":

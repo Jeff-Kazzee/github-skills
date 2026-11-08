@@ -170,6 +170,24 @@ test('check --pr fails when GitHub renders sections away that the offline parser
   assert.match(rendered.stderr, /missing section on GitHub: Risk/)
 })
 
+// Written by hand in the shape GitHub gives a heading inside a block quote or a list item. Those
+// headings sit inside another block, so they are not sections of the body.
+test('check --pr does not count a nested heading as a section when the real one is swallowed', () => {
+  const late = ALL.slice(6)
+  const swallowed = '- item\n\n  ```\n  code\n```\n\n## Risk'
+  const nested = {
+    'block quote': [late.map(name => `> ## ${name}`).join('\n'), names => `<blockquote>\n${h2(names)}\n</blockquote>`],
+    'list item': [late.map(name => `- ## ${name}`).join('\n'), names => `<ul dir="auto">\n${names.map(name => `<li>\n${h2([name])}\n</li>`).join('\n')}\n</ul>`],
+  }
+  for (const [kind, [source, wrap]] of Object.entries(nested)) {
+    const body = lintCases['full head in Testing'].body.replace('## Risk', `${source}\n\n${swallowed}`)
+    const html = `${h2(ALL.slice(0, 6))}\n${wrap(late)}\n<ul dir="auto">\n<li>item</li>\n</ul>\n<pre class="notranslate"><code>## Risk\n</code></pre>`
+    const run = postedCheck(body, html)
+    assert.equal(run.status, 1, `${kind}: ${run.stdout}`)
+    for (const name of late) assert.match(run.stderr, new RegExp(`missing section on GitHub: ${name}`), kind)
+  }
+})
+
 test('check --pr reads headings GitHub wraps in anchors, and catches an order GitHub changed', () => {
   const { body } = lintCases['full head in Testing']
   const wrapped = ALL.map(name => `<div class="markdown-heading" dir="auto"><h2 tabindex="-1" class="heading-element" dir="auto">${name}</h2><a id="user-content-x" class="anchor" href="#x"><svg></svg></a></div>`).join('\n')

@@ -96,8 +96,10 @@ on `dev`, so its check names appear in the picker, hand Jeff one batched ask, ab
 2. A ruleset on `dev`: require a PR, require the `skills-check` and `gate-integrity`
    checks, require conversation resolution, block force pushes and deletion.
 3. A ruleset on `prod`: require a PR, require conversation resolution, block force
-   pushes and deletion. Conversation resolution makes GitHub enforce the rule in
-   `babysit-pr/references/findings.md`: no merge with an open finding.
+   pushes and deletion. Conversation resolution makes GitHub block a merge while a
+   code review thread is open. It cannot see a finding posted only in a review summary,
+   so `babysit-pr/references/findings.md` still requires a person or agent to record
+   those before a merge.
 4. Require code owner review, and turn on private vulnerability reporting.
 
 Done when `--github` shows the rules, or Jeff has the ask.

@@ -10,8 +10,10 @@ Progress and errors that do not end the run go to stderr.
 
 --until
   green       required checks passed on the current head (every CI check when
-              the base branch requires none, or no check at all once the head has
-              gone two minutes without one)
+              the base branch requires none). A head with no CI check counts only
+              when no workflow in .github/workflows runs on push or pull requests
+              and two minutes passed. That line says "no CI configured". If such a
+              workflow exists and no check appears in ten minutes, exit 1.
   ready      green, Greptile or Macroscope reviewed the current head, and no
               review thread is unresolved (default)
   any-change  stop after the first poll that prints an event
@@ -20,7 +22,8 @@ Exit codes
   0  the --until condition is met, or the PR merged
   1  the condition cannot be met without action: a required check failed, the
      branch conflicts with its base, the PR closed, `ready` is blocked by
-     unresolved threads or a BEHIND branch, or GitHub stayed unreachable
+     unresolved threads or a BEHIND branch, a push or pull request workflow
+     produced no check, or GitHub stayed unreachable
   2  bad arguments, unknown PR, or another pr-wait already watches this PR
 
 Events
@@ -47,6 +50,7 @@ reports only what comes after.
 from __future__ import annotations
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import html
@@ -59,6 +63,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 GATING_BOTS = ("greptile", "macroscope")
 ADVISORY_BOTS = ("coderabbit",)
@@ -70,8 +75,14 @@ STATE_DIR = Path.home() / ".local" / "state" / "pr-wait"
 STALE_STATE_SECONDS = 6 * 3600
 MAX_FAILED_POLLS = 10
 # Checks can register late after a push. A PR with no CI check counts as green
-# only after its head has gone this long without one.
+# only when no workflow runs on push or pull requests and its head has gone this
+# long without a check.
 NO_CI_GRACE_SECONDS = 120
+# When such a workflow exists, wait this long for its first check.
+NO_CHECKS_TIMEOUT_SECONDS = 600
+WORKFLOWS_DIR = ".github/workflows"
+# gh pr checks lists push runs on the head too, so push counts as CI.
+CI_EVENTS = {"push", "pull_request", "pull_request_target"}
 TRANSIENT = re.compile(
     r"HTTP (5\d\d|429)|rate limit|timed? ?out|connection (reset|refused)|EOF|"
     r"temporar|could not resolve host|TLS handshake|Something went wrong",
@@ -254,6 +265,89 @@ def required_checks(repo: str, base: str) -> set[str]:
     return names
 
 
+def triggers_on_pr(text: str) -> bool:
+    """Whether a workflow's top-level `on:` names push or a pull request event.
+    Only that block counts, because jobs often mention github.event.pull_request."""
+    lines = text.lstrip(chr(0xFEFF)).splitlines()
+    for index, line in enumerate(lines):
+        start = re.match(r"""(?:on|"on"|'on')\s*:(.*)""", line)
+        if not start:
+            continue
+        return bool(workflow_events(start.group(1), lines[index + 1:]) & CI_EVENTS)
+    return False
+
+
+def workflow_events(inline: str, following: list[str]) -> set[str]:
+    """The event names in an `on:` block: the scalar or flow list on the `on:` line,
+    or the keys and list items one level below it. Values nested deeper, such as
+    workflow_dispatch input descriptions, never count."""
+
+    def clean(token: str) -> str:
+        return token.strip().strip("\"'").strip()
+
+    inline = re.sub(r"(?:^|\s)#.*", "", inline).strip()
+    if inline:
+        return {clean(part) for part in inline.strip("[]").split(",") if clean(part)}
+    rows = []
+    for line in following:
+        text = re.sub(r"(?:^|\s)#.*", "", line).rstrip()
+        if not text.strip():
+            continue
+        # The block ends at the next top-level key. YAML allows its list items at
+        # column 0.
+        if not text[0].isspace() and not text.startswith("-"):
+            break
+        rows.append(text)
+    if not rows:
+        return set()
+    level = min(len(row) - len(row.lstrip()) for row in rows)
+    events = set()
+    for row in rows:
+        if len(row) - len(row.lstrip()) != level:
+            continue
+        item = row.strip()
+        if item.startswith("-"):
+            events.add(clean(item[1:]))
+        else:
+            events.add(clean(item.split(":", 1)[0]))
+    return events
+
+
+def pr_workflows(repo: str, head: str) -> list[str]:
+    """Workflow files at the head that run on push or pull requests. Only a repo
+    with none may count as having no CI, so a file that cannot be read counts."""
+    try:
+        paths = gh_lines([
+            "api", f"repos/{repo}/contents/{WORKFLOWS_DIR}?ref={head}",
+            "--jq", '.[] | select(.type == "file") | .path',
+        ])
+    except GhError as error:
+        if error.transient:
+            raise
+        if "HTTP 404" in str(error):  # no workflows folder
+            return []
+        log(f"could not list {WORKFLOWS_DIR}: {error}")
+        return [f"{WORKFLOWS_DIR} (unreadable)"]
+    found: list[str] = []
+    for path in paths:
+        if not path.endswith((".yml", ".yaml")):
+            continue
+        try:
+            raw = gh(["api", f"repos/{repo}/contents/{quote(path)}?ref={head}", "--jq", ".content"]).stdout
+            text = base64.b64decode(raw).decode("utf-8-sig")
+        except GhError as error:
+            if error.transient:
+                raise
+            log(f"could not read {path}: {error}")
+            text = ""
+        except ValueError:  # bad base64 or not UTF-8
+            text = ""
+        # GitHub sends no content for a file over 1 MB.
+        if not text.strip() or triggers_on_pr(text):
+            found.append(path)
+    return found
+
+
 class Watcher:
     def __init__(self, repo: str, pr: int, until: str, interval: int) -> None:
         self.repo, self.pr, self.until, self.interval = repo, pr, until, interval
@@ -270,6 +364,7 @@ class Watcher:
         self.prev_snapshot: list[tuple[str, str]] | None = None
         self.head_since: tuple[str, float] | None = None
         self.pr_files: dict[str, set[str]] = {}
+        self.workflows: dict[str, list[str]] = {}
 
     def load(self) -> Json | None:
         try:
@@ -398,8 +493,15 @@ class Watcher:
         watched = {name: c for name, c in checks.items() if bot_name(name) not in ADVISORY_BOTS}
         if self.head_since is None or self.head_since[0] != head:
             self.head_since = (head, time.time())
-        no_ci_settled = time.time() - self.head_since[1] >= NO_CI_GRACE_SECONDS
-        gate_done = (bool(gate) or no_ci_settled) and all(bucket(n) != "pending" for n in gate)
+        waited = time.time() - self.head_since[1]
+        # No CI check yet. Read the workflows to tell late CI from no CI.
+        ci_expected: list[str] = []
+        if not gate:
+            if head not in self.workflows:
+                self.workflows[head] = pr_workflows(self.repo, head)
+            ci_expected = self.workflows[head]
+        no_ci = not gate and not ci_expected and waited >= NO_CI_GRACE_SECONDS
+        gate_done = (bool(gate) or no_ci) and all(bucket(n) != "pending" for n in gate)
         all_done = bool(gate) and gate_done and all(c["bucket"] != "pending" for c in watched.values())
         # Checks appear a few seconds after a push. Two identical polls in a row
         # guard against calling a half-registered set of checks finished.
@@ -507,6 +609,7 @@ class Watcher:
             counts[c["bucket"]] = counts.get(c["bucket"], 0) + 1
         failed_names = sorted(name for name, c in watched.items() if c["bucket"] in FAILED)
         parts = [
+            f"no CI configured (no push or pull request workflow in {WORKFLOWS_DIR})" if no_ci else "",
             ", ".join(f"{n} {b}" for b, n in sorted(counts.items()))
             + (f" ({', '.join(failed_names)})" if failed_names else "")
             or "no checks",
@@ -528,6 +631,12 @@ class Watcher:
                 self.finish(1, [dirty_line])
             if fail_lines:
                 self.finish(1, fail_lines)
+            if ci_expected and waited >= NO_CHECKS_TIMEOUT_SECONDS:
+                self.finish(1, [
+                    f"no checks appeared on {short} in {NO_CHECKS_TIMEOUT_SECONDS // 60} minutes, "
+                    f"but these workflows may run on push or pull requests: {', '.join(ci_expected)}. "
+                    "A branch or path filter may skip this PR, or a run may wait for approval in the Actions tab."
+                ])
             if green and self.until == "green":
                 self.reported.add(checks_key)
                 self.finish(0, [f"green on {short}: {summary}{self.behind(base, base_oid, head)}"])

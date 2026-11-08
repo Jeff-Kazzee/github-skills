@@ -10,7 +10,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { looksLikeImage } from './image-check.mjs'
@@ -29,6 +29,18 @@ const GIT_BASH = 'C:/Program Files/Git/bin/bash.exe'
 const withoutCode = text => text.replace(/^```[\s\S]*?^```\s*$/gm, match => match.replace(/[^\n]/g, ''))
 const withoutComments = text => text.replace(/<!--[\s\S]*?-->/g, '')
 const strip = text => text.replace(/<(?!https?:\/\/)[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+const URL_ONLY = /^<?https?:\/\/\S+>?$/
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
+// Covers numeric references and the five named ones a URL can carry, not the full HTML table.
+const unescapeEntities = text => text.replace(/&(?:#(\d+)|#x([\da-f]+)|(amp|lt|gt|quot|apos));/gi,
+  (match, dec, hex, name) => {
+    if (name) return ENTITIES[name.toLowerCase()]
+    const code = dec ? Number(dec) : parseInt(hex, 16)
+    return code <= 0x10ffff ? String.fromCodePoint(code) : match
+  })
+const decode = text => {
+  try { return decodeURIComponent(text) } catch { return text }
+}
 
 export function sections(text) {
   const lines = withoutCode(text).split('\n')
@@ -60,7 +72,8 @@ export function urls(text, definedIn = text) {
   ]
   const linkRefs = [...plain.matchAll(/(?<!!)\[([^\]]+)\](?:\[([^\]]*)\]|(?![(:\[]))/g)].map(m => (m[2] || m[1]).toLowerCase())
   const links = [
-    ...[...plain.matchAll(/\]\(\s*<?([^)\s>]+)/g), ...plain.matchAll(/\bhref="([^"]+)"/g), ...plain.matchAll(/<(https?:\/\/[^\s>]+)>/g)].map(m => m[1]),
+    ...[...plain.matchAll(/\]\(\s*<?([^)\s>]+)/g), ...plain.matchAll(/\bhref="([^"]+)"/g)].map(m => m[1]),
+    ...[...plain.matchAll(/<(https?:\/\/[^\s>]+)>/g)].map(m => unescapeEntities(m[1])),
     ...linkRefs.flatMap(ref => (targets.has(ref) ? [targets.get(ref)] : [])),
     ...[...referenceTargets(text).values()].filter(url => !images.includes(url)),
     ...[...withoutCode(text).matchAll(/<!--\s*source:\s*(\S+)\s*-->/g)].map(m => m[1]),
@@ -121,7 +134,7 @@ export function lint(text, dir) {
 
   const topLines = top.split('\n').slice(titleAt + 1)
     .filter(line => !/<img\b|!\[|<a\b|<h3|<\/?(div|p|br|h3)\b[^>]*>\s*$|<span/.test(line) || /<(strong|p)\b[^>]*>[^<]+/.test(line))
-    .map(strip).filter(Boolean)
+    .map(strip).filter(line => line && !URL_ONLY.test(line))
   if (topLines.length === 0) problems.push('no one-line description under the name')
   for (const line of topLines.slice(0, 2)) {
     if (line.split(' ').length > 10) problems.push(`the line "${line.slice(0, 40)}" is over 10 words`)
@@ -233,24 +246,33 @@ async function reach(url, isImage) {
   }
 }
 
+// The nearest folder at or above dir that holds .git, or dir itself when none does.
+function repoRoot(dir) {
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    if (existsSync(join(at, '.git'))) return at
+    if (dirname(at) === at) return resolve(dir)
+  }
+}
+
 export async function online(text, dir) {
   const problems = []
   const { links, images } = urls(text)
   const headings = anchors(text)
+  const root = repoRoot(dir)
   for (const url of new Set([...links, ...images])) {
     if (url.startsWith('#')) {
-      if (!headings.has(decodeURIComponent(url.slice(1)))) problems.push(`broken anchor ${url}`)
+      if (!headings.has(decode(url.slice(1)))) problems.push(`broken anchor ${url}`)
     } else if (/^https?:/i.test(url)) {
       const failure = await reach(url, images.includes(url))
       if (failure) problems.push(`${url}: ${failure}`)
     } else if (!/^(mailto:|tel:)/i.test(url)) {
       const [target, fragment] = url.split('#')
-      let file = target.split('?')[0]
-      try { file = decodeURIComponent(file) } catch {}
-      const path = join(dir, file)
-      if (!existsSync(path)) problems.push(`missing file ${url}`)
+      const path = join(dir, decode(target.split('?')[0]))
+      const fromRoot = relative(root, path)
+      if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) problems.push(`${url}: outside the repository`)
+      else if (!existsSync(path)) problems.push(`missing file ${url}`)
       else if (images.includes(url) && !looksLikeImage(readFileSync(path))) problems.push(`${url}: not a valid image`)
-      else if (fragment && /\.(md|markdown)$/i.test(path) && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decodeURIComponent(fragment))) {
+      else if (fragment && /\.(md|markdown)$/i.test(path) && !anchors(readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).has(decode(fragment))) {
         problems.push(`broken anchor ${url}`)
       }
     }
@@ -258,11 +280,35 @@ export async function online(text, dir) {
   return problems
 }
 
+// Stops at the first failure, as set -e does, with one exception. A pipeline passes when its
+// last stage succeeds and each earlier stage either succeeds or dies of SIGPIPE (141), which
+// is how a producer such as yes ends once head has read enough.
+const STOP_ON_FAILURE = [
+  '__readme_check_err() {',
+  '  local code=0 s last=${!#}',
+  '  for s in "$@"; do',
+  '    if [ "$s" != 0 ] && [ "$s" != 141 ]; then code=$s; fi',
+  '  done',
+  '  if [ "$last" != 0 ]; then code=$last; fi',
+  '  if [ "$code" != 0 ]; then exit "$code"; fi',
+  '}',
+  '__readme_check_end() {',
+  '  local code=$1',
+  '  shift',
+  '  if [ "$code" = 141 ]; then __readme_check_err "$@"; exit 0; fi',
+  '  exit "$code"',
+  '}',
+  'trap \'__readme_check_err "${PIPESTATUS[@]}"\' ERR',
+  'set -Eo pipefail',
+  '',
+].join('\n')
+
 export function runQuickStart(text, source, timeoutMs = 300000) {
   const dir = mkdtempSync(join(tmpdir(), 'readme-clone-'))
   try {
     execFileSync('git', ['clone', '--quiet', '--depth', '1', source, dir], { stdio: 'pipe' })
-    const script = `set -eo pipefail\n${quickStartScript(text)}`
+    // The last line keeps its own status, as the script's exit code, unless it is a forgiven SIGPIPE pipeline.
+    const script = `${STOP_ON_FAILURE}${quickStartScript(text)}\n__readme_check_end "$?" "\${PIPESTATUS[@]}"\n`
     const shell = existsSync(GIT_BASH) ? GIT_BASH : 'bash'
     const run = spawnSync(shell, ['-c', script], { cwd: dir, stdio: 'pipe', timeout: timeoutMs, encoding: 'utf8' })
     if (run.status === 0) return []
@@ -298,4 +344,5 @@ async function main() {
 
 // Real paths on both sides, so a checker reached through a symlinked skill folder still runs.
 const invoked = process.argv[1] && existsSync(process.argv[1]) ? realpathSync(process.argv[1]) : null
-if (invoked === realpathSync(fileURLToPath(import.meta.url))) await main()
+// import.meta.main also covers an entry path a loader maps here. The realpath check covers a Node without it.
+if (import.meta.main ?? invoked === realpathSync(fileURLToPath(import.meta.url))) await main()

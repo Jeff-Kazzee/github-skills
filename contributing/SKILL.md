@@ -74,7 +74,8 @@ node <this skill's folder>/scripts/contributing-check.mjs CONTRIBUTING.md --onli
 ```
 
 A pointer file (no `##` headings, under 250 words) skips the section and setup rules.
-It must link the hosted guide over http, and still links the security policy.
+It must link the hosted guide over http, and still links the security policy. If it
+holds `sh` commands, `--clone` runs them on a fresh clone like setup commands.
 
 The check fails on any of these:
 
@@ -88,8 +89,8 @@ The check fails on any of these:
 - An em or en dash, a semicolon in prose, a marketing adjective, or more than 2,500
   words.
 - With `--online`, a dead `http` link.
-- With `--clone`, a setup or test command that fails on a fresh clone. The check skips
-  the clone and the `cd` that follows it.
+- With `--clone`, a setup or test command, or a pointer file's command, that fails on a
+  fresh clone. The check skips the clone and the first `cd` into the cloned folder.
 
 `--clone` runs the commands on the machine you run it on. For a repo Jeff owns, run it
 on `linveo-16gb`. For anything else, run it in a sandbox, or leave `--clone` off and say

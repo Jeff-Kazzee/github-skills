@@ -29,7 +29,7 @@ jobs:
           python-version: "3.13"
       - name: Node tests
         shell: bash
-        run: node --test $(ls */scripts/*.test.mjs)
+        run: node --test ./*/scripts/*.test.mjs
       - name: pr-wait tests
         shell: bash
         working-directory: babysit-pr/scripts

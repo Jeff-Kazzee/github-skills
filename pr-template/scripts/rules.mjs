@@ -191,9 +191,16 @@ export function classifyMedia(html, repo) {
 
 // Problems with the sections a reader sees, from rendered HTML. The offline parser can find a heading that
 // GitHub folds into code, so a posted body is checked here as well.
+// Only a heading outside every block quote and list item counts as a section, as in the offline parser.
 export function renderedProblems(html) {
-  const found = [...html.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/g)]
-    .map(m => m[1].replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').trim())
+  let depth = 0
+  const headings = []
+  for (const m of html.matchAll(/<(\/?)(?:blockquote|li)\b[^>]*>|<h2\b[^>]*>([\s\S]*?)<\/h2>/g)) {
+    if (m[2] === undefined) depth = Math.max(0, depth + (m[1] ? -1 : 1))
+    else if (depth === 0) headings.push(m[2])
+  }
+  const found = headings
+    .map(text => text.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').trim())
     .map(text => (text === 'Visual Proof' ? 'Proof' : text))
     .filter(text => SECTIONS.includes(text))
   const problems = SECTIONS.filter(section => !found.includes(section)).map(section => `missing section on GitHub: ${section}`)

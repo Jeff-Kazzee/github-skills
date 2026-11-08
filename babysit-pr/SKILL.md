@@ -168,7 +168,14 @@ Done when every posted comment has a URL from GitHub and matches the approved te
 Reread the live state and quote the head SHA, the checks and the mergeability. Report
 the failures you fixed in order, each thread with its answer, and what waits on whom.
 Merge only when the user asked, through `agent-git land` after Jeff approves the exact
-head, and only when no review thread is open. Right before a merge, run `git fetch` and recheck the PR. Never merge when it is
+head, and only when no review thread is open. Right before a merge, run `git fetch`,
+recheck the PR, and count open threads with a query that pages through all of them:
+
+```sh
+gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length'
+```
+
+Merge only when every page reports 0. Never merge when it is
 BEHIND or DIRTY, or when base commits that landed after the last green run touch its
 files.
 
