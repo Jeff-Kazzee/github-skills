@@ -395,6 +395,14 @@ class LateCiChecks(unittest.TestCase):
         ):
             self.assertFalse(pr_wait.triggers_on_pr(text), text)
 
+    def test_event_words_inside_inputs_do_not_count(self):
+        for text in (
+            "on:\n  workflow_dispatch:\n    inputs:\n      mode:\n        description: 'Choose whether to push the release'\njobs: {}\n",
+            "on:\n  workflow_dispatch:\n    inputs:\n      push:\n        type: boolean\njobs: {}\n",
+            "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n    inputs:\n      target:\n        default: pull_request\njobs: {}\n",
+        ):
+            self.assertFalse(pr_wait.triggers_on_pr(text), text)
+
     def test_workflows_are_read_once_per_head(self):
         fake = FakeGitHub(checks=[], workflows={".github/workflows/nightly.yml": CRON_WORKFLOW}, max_polls=30)
         watch(fake, until="green")
