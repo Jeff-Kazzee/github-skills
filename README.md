@@ -1,6 +1,6 @@
 # GitHub skills
 
-Seven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
+Eight agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
 
 | Skill | What it does |
 |---|---|
@@ -11,6 +11,7 @@ Seven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Clau
 | [`readme`](readme/SKILL.md) | Writes or rewrites a repository README that shows the project on its first screen and proves every claim |
 | [`contributing`](contributing/SKILL.md) | Writes a CONTRIBUTING.md that takes a first-time contributor from a fresh clone to a merged PR |
 | [`babysit-pr`](babysit-pr/SKILL.md) | Watches your PR through CI and review, fixes failing checks, and answers each review thread |
+| [`review-comments`](review-comments/SKILL.md) | Writes a reviewer's inline comments, suggested changes and review summary, each labeled and actionable |
 
 ## Install
 
@@ -23,13 +24,14 @@ cp -r github-skills/pr-template ~/.claude/skills/
 
 ## Tests
 
-`contributing`, `pr-template`, `readme` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
+`contributing`, `pr-template`, `readme`, `review-comments` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
 
 ```sh
 node --test contributing/scripts/contributing-check.test.mjs \
   pr-template/scripts/pr-body.test.mjs \
   readme/scripts/image-check.test.mjs \
   readme/scripts/readme-check.test.mjs \
+  review-comments/scripts/review-lint.test.mjs \
   review-gate/scripts/risk-floor.test.mjs
 ```
 
