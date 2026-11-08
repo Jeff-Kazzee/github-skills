@@ -193,6 +193,32 @@ test('a body is checked against a declared shape', () => {
   assert.ok(problems.some(p => p.startsWith('sections out of order')))
 })
 
+test('a heading inside a fenced example is not a section', () => {
+  const sections = ['Intent', 'Proof']
+  const example = '## Intent\nFix it.\n## Proof\nRan it:\n\n```markdown\n## Intent\nAn example.\n```\n'
+  assert.deepEqual(shapeProblems(example, sections), [])
+  const tilde = '## Intent\nFix it.\n## Proof\nRan it:\n\n~~~~\n## Intent\n```\n## Proof\n~~~~\n'
+  assert.deepEqual(shapeProblems(tilde, sections), [])
+  const unclosed = '## Intent\nFix it.\n\n```\n## Proof\nNot a section.\n'
+  assert.ok(shapeProblems(unclosed, sections).includes('missing section: Proof'))
+  assert.deepEqual(shapeProblems('## Intent\n```text\nout\n```\n## Proof\nRan it.\n', sections), [])
+})
+
+test('a fenced example cannot stand in for the declared sections', () => {
+  const problems = shapeProblems('```markdown\n## Intent\nFix it.\n## Size\nSmall.\n```\n', ['Intent', 'Size'])
+  assert.ok(problems.includes('missing section: Intent'), problems.join())
+  assert.ok(problems.includes('missing section: Size'), problems.join())
+})
+
+test('a tracked env file with more than one suffix fails, a schema or example passes', () => {
+  for (const path of ['.env.production.local', 'app/.env.development.local', '.env.local']) {
+    assert.equal(status(audit(fixture(), { trackedFiles: [path] }), 'secrets.env-files'), 'fail', path)
+  }
+  for (const path of ['.env.schema', 'app/.env.local.example', '.env.production.sample', 'src/.envrc.md']) {
+    assert.equal(status(audit(fixture(), { trackedFiles: [path] }), 'secrets.env-files'), 'pass', path)
+  }
+})
+
 test('a declared template is kept and checked against its own shape', () => {
   const dir = fixture({
     '.github/pull_request_template.md': '## Intent\n\n## Size\n',
