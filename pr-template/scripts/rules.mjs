@@ -189,6 +189,20 @@ export function classifyMedia(html, repo) {
   return { pins, problems }
 }
 
+// Problems with the sections a reader sees, from rendered HTML. The offline parser can find a heading that
+// GitHub folds into code, so a posted body is checked here as well.
+export function renderedProblems(html) {
+  const found = [...html.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/g)]
+    .map(m => m[1].replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').trim())
+    .map(text => (text === 'Visual Proof' ? 'Proof' : text))
+    .filter(text => SECTIONS.includes(text))
+  const problems = SECTIONS.filter(section => !found.includes(section)).map(section => `missing section on GitHub: ${section}`)
+  if (found.join('|') !== SECTIONS.filter(section => found.includes(section)).join('|')) {
+    problems.push(`sections out of order on GitHub: ${found.join(', ')}`)
+  }
+  return problems
+}
+
 // Sends the whole body to GitHub. Only an explicit --render or an already posted PR reaches this.
 export async function render(text, repo, online) {
   const request = JSON.stringify({ text, mode: 'gfm', context: repo })
