@@ -1,6 +1,6 @@
 # GitHub skills
 
-Six agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
+Seven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
 
 | Skill | What it does |
 |---|---|
@@ -10,6 +10,7 @@ Six agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude
 | [`issues-and-releases`](issues-and-releases/SKILL.md) | Files issues a maintainer can act on, writes issue comments, and cuts releases people can trust |
 | [`readme`](readme/SKILL.md) | Writes or rewrites a repository README that shows the project on its first screen and proves every claim |
 | [`contributing`](contributing/SKILL.md) | Writes a CONTRIBUTING.md that takes a first-time contributor from a fresh clone to a merged PR |
+| [`babysit-pr`](babysit-pr/SKILL.md) | Watches your PR through CI and review, fixes failing checks, and answers each review thread |
 
 ## Install
 
@@ -31,6 +32,8 @@ node --test contributing/scripts/contributing-check.test.mjs \
   readme/scripts/readme-check.test.mjs \
   review-gate/scripts/risk-floor.test.mjs
 ```
+
+`babysit-pr` ships `pr-wait`, a Python watcher with no test suite. Check it compiles with `python -m py_compile babysit-pr/scripts/pr-wait babysit-pr/scripts/pr-wait-win.py`.
 
 ## Notes
 
