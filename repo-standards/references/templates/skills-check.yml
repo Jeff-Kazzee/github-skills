@@ -1,0 +1,103 @@
+# Installed by the repo-standards skill. Mark skills-check and gate-integrity required on dev.
+#
+# Every job is read-only. A failing check blocks the merge. Nothing here closes, labels or edits
+# a PR, and no job skips an author, so the owner's own PRs are blocked too.
+name: skills-check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  skills-check:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The rules come from the base commit, so a PR cannot weaken the check that judges it.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .base
+          persist-credentials: false
+      # One standard for every repo, fetched at a pinned commit. Never copy the checkers into the repo.
+      - name: Get the checkers at a pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Jeff-Kazzee/github-skills
+          ref: {{github_skills_sha}}
+          path: .standards
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: PR body
+        run: node .standards/repo-standards/scripts/repo-check.mjs pr .base --pr "$PR_NUMBER"
+      - name: List changed files
+        run: gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt"
+      - name: README, when it changed
+        run: |
+          if grep -qx 'README.md' "$RUNNER_TEMP/changed.txt"; then
+            node .standards/readme/scripts/readme-check.mjs README.md --online
+          else
+            echo "README.md unchanged, skipped"
+          fi
+
+  gate-integrity:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # Only the base commit is checked out. No code from the PR runs in this job.
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .base
+          persist-credentials: false
+      - name: Get the checkers at a pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Jeff-Kazzee/github-skills
+          ref: {{github_skills_sha}}
+          path: .standards
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: List changed files
+        run: gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt"
+      - name: Fail when a gate file changed
+        run: node .standards/repo-standards/scripts/repo-check.mjs gate .base "$RUNNER_TEMP/changed.txt"
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get the checkers at a pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Jeff-Kazzee/github-skills
+          ref: {{github_skills_sha}}
+          path: .standards
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Reported, never failing. review-gate counts any failed check, and a repo rolls the
+      # standards in without blocking open work.
+      - name: Repository standards
+        continue-on-error: true
+        run: node .standards/repo-standards/scripts/repo-check.mjs . | tee -a "$GITHUB_STEP_SUMMARY"

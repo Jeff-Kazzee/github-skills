@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work the way the docs say it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report a security problem privately, never here. See SECURITY.md.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Search first
+      options:
+        - label: I searched open and closed issues and found no report of this problem
+          required: true
+  - type: textarea
+    id: did
+    attributes:
+      label: What did you do?
+      description: The smallest reproduction, as commands.
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: saw
+    attributes:
+      label: What did you see?
+      description: The exact output or error. Remove tokens and private data.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and why?
+      description: Link the doc or the earlier version that behaved this way, if there is one.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where?
+      description: Version or commit SHA, OS, and runtime.
+      placeholder: v1.2.3 (abc1234), Ubuntu 24.04, Node 24
+    validations:
+      required: true
