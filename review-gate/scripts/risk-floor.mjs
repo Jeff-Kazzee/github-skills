@@ -17,12 +17,15 @@ function pages(path, key) {
   return JSON.parse(gh('api', '--paginate', '--slurp', path)).flatMap(page => key ? page[key] : page)
 }
 
-// A rule that is not set answers 404, and a plan without branch protection answers 403.
+// A rule that is not set answers 404, and a plan without branch protection answers 403 with an upgrade
+// message. Any other 403 means the token cannot read the rule, so the rule is unknown and the check stops.
 function optional(read, fallback) {
   try {
     return read()
   } catch (error) {
-    if (/HTTP 40[34]/.test(`${error.stderr}`)) return fallback
+    const said = `${error.stderr}`
+    if (/HTTP 404/.test(said) || (/HTTP 403/.test(said) && /upgrade to github pro|make this repository public/i.test(said))) return fallback
+    if (/HTTP 403/.test(said)) throw new Error(`no access to read the repository rules: ${said.trim()}`)
     throw error
   }
 }
