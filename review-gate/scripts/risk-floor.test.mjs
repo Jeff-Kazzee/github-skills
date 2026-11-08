@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ciState, floor, MAX_LINES } from './risk-rules.mjs'
 
-const file = (path, additions = 5, deletions = 5) => ({ path, additions, deletions })
-const judge = (files, overrides = {}) => floor({ files, base: 'dev', trusted: true, ci: 'green', ...overrides })
+const file = (path, additions = 5, deletions = 5, patch) => ({ path, additions, deletions, ...(patch === undefined ? {} : { patch }) })
+const judge = (files, overrides = {}) => floor({ files, trusted: true, ci: 'green', ...overrides })
 let serial = 0
 const actions = (conclusion, status = 'completed', name = `job ${serial++}`, started_at = '2026-11-06T10:00:00Z') =>
   ({ app: { slug: 'github-actions' }, conclusion, status, name, started_at })
@@ -11,12 +11,13 @@ const bot = conclusion => ({ app: { slug: 'coderabbitai' }, conclusion, status: 
 const at = hour => `2026-11-06T${hour}:00:00Z`
 const workflow = (conclusion, created_at, name = 'ci', status = 'completed', event = 'pull_request') => ({ name, conclusion, status, created_at, event })
 
-test('lanes follow the level when nothing blocks', () => {
-  assert.equal(judge([file('docs/guide.md')]).lane, 'ship')
-  assert.equal(judge([file('src/app.test.ts')]).lane, 'ship')
-  assert.equal(judge([file('src/app.ts')]).lane, 'show')
+test('the level follows the change, and no result carries merge authority', () => {
+  assert.equal(judge([file('docs/guide.md')]).level, 'Low')
+  assert.equal(judge([file('src/app.test.ts')]).level, 'Low')
+  assert.equal(judge([file('src/app.ts')]).level, 'Medium')
   assert.equal(judge([file('src/app.ts'), file('README.md')]).level, 'Medium')
-  assert.equal(judge([file('.github/workflows/ci.yml')]).lane, 'ask')
+  assert.equal(judge([file('.github/workflows/ci.yml')]).level, 'High')
+  for (const key of Object.keys(judge([file('docs/guide.md')]))) assert.ok(!/merge|lane|approve/i.test(key), key)
 })
 
 for (const [path, reason] of [
@@ -80,6 +81,42 @@ test('a spec or test file by name is still a test', () => {
   assert.equal(judge([file('tests/fixtures/sample.json')]).level, 'Low')
 })
 
+test('a change that removes test lines is never Low', () => {
+  assert.equal(judge([file('src/app.test.ts', 0, 40)]).level, 'Medium')
+  assert.equal(judge([file('tests/test_api.py', 2, 3)]).level, 'Medium')
+  assert.equal(judge([file('src/app.test.ts', 40, 40)]).level, 'Low')
+  assert.equal(judge([file('docs/old.md', 0, 40)]).level, 'Low')
+})
+
+for (const [name, path, patch, reason] of [
+  ['an install script with no lockfile', 'package.json', '@@ -1 +1 @@\n+    "postinstall": "node setup.js",', 'an install script in the diff'],
+  ['a removed prepare script', 'packages/a/package.json', '@@ -1 +1 @@\n-    "prepare": "husky",', 'an install script in the diff'],
+  ['a new dependency with no lockfile', 'package.json', '@@ -1 +1 @@\n+    "left-pad": "^1.3.0",', 'a dependency change in the diff'],
+  ['a scoped dependency', 'package.json', '@@ -1 +1 @@\n+    "@acme/x": "workspace:*",', 'a dependency change in the diff'],
+  ['a shell call in an ordinary file', 'src/utils.ts', "@@ -1 +1 @@\n+import { execSync } from 'node:child_process'", 'a risky call in the diff'],
+  ['eval in an ordinary file', 'src/format.js', '@@ -1 +1 @@\n+  return eval(text)', 'a risky call in the diff'],
+  ['raw HTML in a component', 'src/Card.tsx', '@@ -1 +1 @@\n+  <div dangerouslySetInnerHTML={html} />', 'a risky call in the diff'],
+  ['data loss in plain code', 'src/cleanup.py', '@@ -1 +1 @@\n+    db.run("DELETE FROM users")', 'a risky call in the diff'],
+]) {
+  test(`content raises the level: ${name}`, () => {
+    const found = judge([file(path, 1, 1, patch)])
+    assert.equal(found.level, 'High')
+    assert.ok(found.reasons.some(line => line.startsWith(reason)), found.reasons.join())
+  })
+}
+
+test('harmless content stays where it was', () => {
+  assert.equal(judge([file('package.json', 1, 1, '@@ -1 +1 @@\n+  "version": "1.2.3",')]).level, 'Medium')
+  assert.equal(judge([file('package.json', 1, 1, '@@ -1 +1 @@\n+    "test": "node --test",')]).level, 'Medium')
+  assert.equal(judge([file('docs/guide.md', 1, 0, '@@ -1 +1 @@\n+Never run rm -rf here.')]).level, 'Low')
+  assert.equal(judge([file('src/app.ts', 0, 1, '@@ -1 +1 @@\n-  eval(text)')]).level, 'Medium')
+})
+
+test('a diff GitHub would not show counts as High, and a binary change does not', () => {
+  assert.equal(judge([file('src/huge.ts', 400, 0, null)]).level, 'High')
+  assert.equal(judge([file('public/logo.png', 0, 0, null)]).level, 'Medium')
+})
+
 test('a repo can mark more paths High', () => {
   const found = judge([file('src/ledger.ts')], { extra: [/ledger/i] })
   assert.equal(found.level, 'High')
@@ -100,37 +137,46 @@ test('size can raise a level, and generated files do not count toward it', () =>
   assert.equal(judge([file('src/app.ts'), file('scripts/golden.json', 9000, 0)]).level, 'Medium')
 })
 
+test('an outside author or a promotion is High, and a base branch name decides nothing', () => {
+  assert.equal(judge([file('docs/guide.md')], { trusted: false }).level, 'High')
+  assert.equal(judge([file('docs/guide.md')], { promotion: true }).level, 'High')
+  assert.equal(judge([file('docs/guide.md')], { base: 'main' }).level, 'Low')
+})
+
 for (const [name, overrides, blocker] of [
-  ['a promotion', { base: 'prod' }, 'base is prod'],
-  ['a stacked PR', { base: 'task/198-github-plugin' }, 'base is task/198'],
-  ['an outside author', { trusted: false }, 'the author'],
   ['a draft', { draft: true }, 'still a draft'],
   ['CI that never ran', { ci: 'did not run' }, 'CI did not run'],
   ['failed CI', { ci: 'failed' }, 'CI failed'],
+  ['running CI', { ci: 'still running' }, 'CI still running'],
 ]) {
-  test(`${name} goes to Jeff even as a docs change`, () => {
+  test(`${name} blocks even a docs change`, () => {
     const found = judge([file('docs/guide.md')], overrides)
     assert.equal(found.level, 'Low')
-    assert.equal(found.lane, 'ask')
+    assert.equal(found.ready, false)
     assert.ok(found.blockers.some(line => line.startsWith(blocker)), found.blockers.join())
   })
 }
 
-test('no reported files goes to Jeff', () => assert.equal(judge([]).lane, 'ask'))
+test('no reported files blocks', () => assert.equal(judge([]).ready, false))
+test('a clean High change is ready for review, which is not approval', () => {
+  const found = judge([file('.github/workflows/ci.yml')])
+  assert.equal(found.ready, true)
+  assert.equal(found.level, 'High')
+})
 
 test('CI is green only when the named workflow succeeded', () => {
   assert.equal(ciState([], [workflow('success', at(10))]), 'green')
   assert.equal(ciState([actions('skipped')], [workflow('success', at(10))]), 'green')
   assert.equal(ciState([actions('failure')], [workflow('success', at(10))]), 'failed')
   assert.equal(ciState([], [workflow(null, at(10), 'ci', 'in_progress')]), 'still running')
-  assert.equal(ciState([], [workflow('success', at(10), 'test suite')], 'test suite'), 'green')
+  assert.equal(ciState([], [workflow('success', at(10), 'test suite')], { required: 'test suite' }), 'green')
 })
 
 test('a labeler passing proves nothing', () => {
   const labeler = workflow('success', at(10), 'Labeler')
   assert.equal(ciState([actions('success', 'completed', 'label')], [labeler]), 'did not run')
-  assert.equal(ciState([], [labeler], 'test suite'), 'did not run')
-  assert.equal(ciState([], [workflow('success', at(10))], 'test suite'), 'did not run')
+  assert.equal(ciState([], [labeler], { required: 'test suite' }), 'did not run')
+  assert.equal(ciState([], [workflow('success', at(10))], { required: 'test suite' }), 'did not run')
 })
 
 test('a superseded run of one workflow and event does not count, as on GitHub', () => {
@@ -156,6 +202,30 @@ test('an older pass cannot hide a newer failure, and a newer run still going is 
 
 test('the named workflow passing does not excuse a different one that failed', () => {
   assert.equal(ciState([], [workflow('success', at(12)), workflow('failure', at(10), 'review gate')]), 'failed')
+})
+
+test('two apps can share a check name, and a failure in either counts', () => {
+  const vercel = conclusion => ({ app: { slug: 'vercel' }, conclusion, status: 'completed', name: 'build', started_at: at(11) })
+  assert.equal(ciState([actions('failure', 'completed', 'build', at(10)), vercel('success')], [workflow('success', at(10))]), 'failed')
+})
+
+test('a conclusion this code has never seen, or a blank one, fails closed', () => {
+  const green = workflow('success', at(10))
+  assert.equal(ciState([actions('some_new_state')], [green]), 'failed')
+  assert.equal(ciState([actions(null)], [green]), 'failed')
+  assert.equal(ciState([], [green, workflow('weird', at(11), 'other')]), 'failed')
+})
+
+test('legacy commit statuses count, and required contexts must have passed', () => {
+  const green = workflow('success', at(10))
+  const status = (context, state) => ({ context, state })
+  assert.equal(ciState([], [green], { statuses: [status('deploy/preview', 'failure')] }), 'failed')
+  assert.equal(ciState([], [green], { statuses: [status('deploy/preview', 'error')] }), 'failed')
+  assert.equal(ciState([], [green], { statuses: [status('deploy/preview', 'pending')] }), 'still running')
+  assert.equal(ciState([], [green], { contexts: ['legacy/test'] }), 'did not run')
+  assert.equal(ciState([], [green], { contexts: ['legacy/test'], statuses: [status('legacy/test', 'success')] }), 'green')
+  assert.equal(ciState([actions('success', 'completed', 'lint')], [green], { contexts: ['lint'] }), 'green')
+  assert.equal(ciState([actions('skipped', 'completed', 'lint')], [green], { contexts: ['lint'] }), 'did not run')
 })
 
 test('a failed third-party check counts, and a passing one proves nothing', () => {
