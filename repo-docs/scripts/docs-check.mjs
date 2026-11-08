@@ -229,7 +229,12 @@ function resolveTarget(from, target, root, site) {
   for (const candidate of tries) {
     if (!existsExact(candidate)) continue
     if (statSync(candidate).isFile()) return candidate
-    if (candidate === base) return ['README.md', 'index.md', '_index.md', 'index.mdx'].map(name => join(base, name)).find(existsExact) ?? base
+    if (candidate === base) {
+      const indexes = ['README.md', 'index.md', '_index.md', 'index.mdx', 'SUMMARY.md'].map(name => join(base, name))
+      const index = indexes.find(existsExact)
+      if (index) return index
+      return indexes.some(path => lookup(path, root) === 'case') ? { wrongCase: true } : base
+    }
   }
   const looks = tries.map(candidate => lookup(candidate, root))
   if (looks.includes('case')) return { wrongCase: true }

@@ -22,6 +22,33 @@ test('the checker runs when started through a symlinked skill folder', t => {
   assert.match(run.stderr, /usage/i)
 })
 
+test('the checker runs when started through a file symlink with another name', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'symlink-file-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const link = join(dir, 'check.mjs')
+  try {
+    symlinkSync(join(dirname(fileURLToPath(import.meta.url)), 'docs-check.mjs'), link, 'file')
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip(`this OS refused to create a symlink: ${error.code}`)
+    throw error
+  }
+  const run = spawnSync(process.execPath, [link], { encoding: 'utf8' })
+  assert.equal(run.status, 2, run.stderr)
+  assert.match(run.stderr, /usage/i)
+})
+
+test('the checker does not run when another script with the same name imports it', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'same-name-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const target = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'docs-check.mjs')).href
+  const importer = join(dir, 'docs-check.mjs')
+  writeFileSync(importer, `import ${JSON.stringify(target)}\nconsole.log('importer ran')\n`)
+  const run = spawnSync(process.execPath, [importer], { encoding: 'utf8' })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /importer ran/)
+  assert.doesNotMatch(run.stderr, /usage/i)
+})
+
 test('the checker runs when a loader maps a virtual entry path to it', t => {
   const dir = mkdtempSync(join(tmpdir(), 'virtual-entry-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
