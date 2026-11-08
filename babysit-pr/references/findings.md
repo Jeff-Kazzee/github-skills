@@ -47,8 +47,18 @@ with the command that shows it.
 
 ## 4. Fix them on one branch
 
-- Work on one fix branch from the base the PR targeted, named
-  `task/<id>-review-findings` or `fix/review-findings-<date>`.
+- Work on one fix branch, named `task/<id>-review-findings` or
+  `fix/review-findings-<date>`. Start it where the code under review lives:
+  - Open PR: branch from the PR head (`origin/<head branch>`), because code the PR
+    adds exists only there. The fixes must reach that head before sections 5 and 6.
+    When the head is a task branch you created, push the fixes to it with
+    `git push origin HEAD:<head branch>`. That push is a fast-forward. If it is
+    rejected because the head moved, rebase onto the new head and run the tests again.
+    When the head is `dev`, `prod`, `main` or a branch you did not create, never push to
+    it. Open the fix PR into the head branch. The open PR gets the fixes when that fix
+    PR merges.
+  - Merged PR: branch from the base the PR merged into, and open the fix PR into that
+    base as section 7 says.
 - Fix each reproduced finding with the smallest change that makes its test pass. Keep
   each test in the same commit as its fix.
 - Many findings across several files can go to parallel workers, one worker per group
