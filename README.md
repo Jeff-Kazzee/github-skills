@@ -1,6 +1,6 @@
 # GitHub skills
 
-Five agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
+Six agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
 
 | Skill | What it does |
 |---|---|
@@ -9,6 +9,7 @@ Five agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claud
 | [`review-gate`](review-gate/SKILL.md) | Sets a pull request's risk level from its diff and says how much review it needs |
 | [`issues-and-releases`](issues-and-releases/SKILL.md) | Files issues a maintainer can act on, writes issue comments, and cuts releases people can trust |
 | [`readme`](readme/SKILL.md) | Writes or rewrites a repository README that shows the project on its first screen and proves every claim |
+| [`contributing`](contributing/SKILL.md) | Writes a CONTRIBUTING.md that takes a first-time contributor from a fresh clone to a merged PR |
 
 ## Install
 
@@ -21,10 +22,11 @@ cp -r github-skills/pr-template ~/.claude/skills/
 
 ## Tests
 
-`pr-template`, `readme` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
+`contributing`, `pr-template`, `readme` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
 
 ```sh
-node --test pr-template/scripts/pr-body.test.mjs \
+node --test contributing/scripts/contributing-check.test.mjs \
+  pr-template/scripts/pr-body.test.mjs \
   readme/scripts/image-check.test.mjs \
   readme/scripts/readme-check.test.mjs \
   review-gate/scripts/risk-floor.test.mjs
