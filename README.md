@@ -4,7 +4,7 @@ Five agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claud
 
 | Skill | What it does |
 |---|---|
-| [`commit`](commit/SKILL.md) | Writes commits with one logical change, a subject that stands alone, a body that says why, and trailers |
+| [`commit`](commit/SKILL.md) | Writes commits and merge messages with one logical change, a subject that stands alone, a body that says why, and trailers |
 | [`pr-template`](pr-template/SKILL.md) | Writes every pull request in one format: ELI5, before and after, proof, testing, risk and a checklist, with evidence attached |
 | [`review-gate`](review-gate/SKILL.md) | Sets a pull request's risk level from its diff and says how much review it needs |
 | [`issues-and-releases`](issues-and-releases/SKILL.md) | Files issues a maintainer can act on and cuts releases people can trust |
@@ -21,11 +21,13 @@ cp -r github-skills/pr-template ~/.claude/skills/
 
 ## Tests
 
-`pr-template`, `review-gate` and `readme` ship Node scripts with tests:
+`pr-template`, `readme` and `review-gate` ship Node scripts with tests. Run them all from the repo root:
 
 ```sh
-node --test pr-template/scripts/pr-body.test.mjs review-gate/scripts/risk-floor.test.mjs
-node --test readme/scripts/readme-check.test.mjs readme/scripts/image-check.test.mjs
+node --test pr-template/scripts/pr-body.test.mjs \
+  readme/scripts/image-check.test.mjs \
+  readme/scripts/readme-check.test.mjs \
+  review-gate/scripts/risk-floor.test.mjs
 ```
 
 ## Notes
