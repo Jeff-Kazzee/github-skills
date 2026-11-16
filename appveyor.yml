@@ -1,0 +1,30 @@
+version: '1.0.{build}'
+image:
+  - Visual Studio 2022
+  - Ubuntu2404
+stack: node 24, python 3.13
+build: off
+install:
+  - ps: |
+      if ($env:OS -eq 'Windows_NT') {
+        Install-Product node 24 x64
+        $env:Path = "C:\Python313-x64;$env:Path"
+      }
+  - ps: |
+      $revision = $env:APPVEYOR_REPO_COMMIT
+      if ($env:APPVEYOR_PULL_REQUEST_NUMBER) {
+        $revision = $env:APPVEYOR_PULL_REQUEST_HEAD_COMMIT
+      }
+      if ($revision -notmatch '^[0-9a-f]{40}$') { throw 'Missing build SHA' }
+      git checkout --detach $revision
+      if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD) -ne $revision) { throw 'Wrong checkout' }
+      Write-Host "Testing $revision on $env:APPVEYOR_BUILD_WORKER_IMAGE"
+  - node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)"
+  - python -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))"
+test_script:
+  - node --test "./*/scripts/*.test.mjs"
+  - ps: |
+      Set-Location babysit-pr/scripts
+      if (-not (Get-ChildItem -File 'test*.py')) { throw 'Missing Python test suite' }
+      python -m unittest discover -v
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
