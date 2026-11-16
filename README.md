@@ -1,9 +1,11 @@
 # GitHub skills
 
-Eleven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
+Agent skills for GitHub work. Each is a folder with a `SKILL.md` that Claude Code, Codex, OpenCode and other agents that read Agent Skills can load.
 
 | Skill | What it does |
 |---|---|
+| [`github-flow`](github-flow/SKILL.md) | Take an independent change from a fresh branch through review, checks and safe cleanup |
+| [`git-flow`](git-flow/SKILL.md) | Choose the development, promotion, isolated release or urgent hotfix route and track each destination |
 | [`commit`](commit/SKILL.md) | Writes commits and merge messages with one logical change, a subject that stands alone, a body that says why, and trailers |
 | [`pr-template`](pr-template/SKILL.md) | Writes every pull request in one format: ELI5, before and after, proof, testing, risk and a checklist, with evidence attached |
 | [`review-gate`](review-gate/SKILL.md) | Sets a pull request's risk level from its diff and says how much review it needs |
@@ -16,7 +18,13 @@ Eleven agent skills for GitHub work. Each is a folder with a `SKILL.md` that Cla
 | [`repo-docs`](repo-docs/SKILL.md) | Lays out a docs folder or wiki, writes each page from its type's template, and checks links and freshness |
 | [`repo-standards`](repo-standards/SKILL.md) | Audits a repo against these skills and installs the templates, forms and blocking CI check that enforce them |
 
+## Repository workflow
+
+This repository uses the lightweight development and production route. Start a fresh `task/<id>-<slug>` from `origin/dev` and target `dev`. Use the GitHub flow skill for the PR and the Git flow promotion route from `dev` to `prod`. Follow the existing PR template, review gate and exact-text approval requirement. Every merge needs Jeff's approval of the checked head.
+
 ## Install
+
+Install both branching folders from the same reviewed revision, including their `references/` directories. Each runtime or hosted workspace needs access to that revision. On a managed machine with a shared skill catalogue, use its existing discovery links. Check the two names in a fresh session.
 
 Copy or link a skill folder into your agent's skills folder. For Claude Code:
 
