@@ -23,8 +23,5 @@ install:
   - python -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))"
 test_script:
   - node --test "./*/scripts/*.test.mjs"
-  - ps: |
-      Set-Location babysit-pr/scripts
-      if (-not (Get-ChildItem -File 'test*.py')) { throw 'Missing Python test suite' }
-      python -m unittest discover -v
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  - python -c "import unittest; suite=unittest.defaultTestLoader.discover('babysit-pr/scripts'); assert suite.countTestCases() > 0"
+  - python -m unittest discover -s babysit-pr/scripts -v
