@@ -16,7 +16,7 @@ Read the repository's release policy, branch history, protection rules, open PRs
 
 Record each destination separately in the [release handoff](references/handoff.md). Run the repository's tests against each proposed integration, especially after conflict resolution or a backport. Apply a version tag to the released production commit only when the project calls for one and the action is authorised. Where only development may promote to production, integrate the approved release fixes via that route. If development already includes work that cannot ship, stop at the conflict and use the documented emergency route or obtain a maintainer decision. Keep the production guard in force.
 
-Use the `github-flow` skill for the PR cycle. Show Jeff the exact text and destination before posting or changing PR text or comments. Obtain fresh approval for revised wording. Required reviews, checks and merge authorisation apply to each target and head. Deployments have their own approval.
+Use the `github-flow` skill for the PR cycle. Before posting or editing PR text or comments, show Jeff the exact text and destination and wait for his explicit approval. Obtain fresh approval if either changes. Required reviews, checks and merge authorisation apply to each target and head. Deployments have their own approval.
 
 Use a fresh branch for new work. Before authorised cleanup, verify the reviewed tip reached every required destination and the branch has no later commits, active worktree, owner or dependent PR needing it. Check squash and cherry-pick results against the merged PR and destination content. Keep temporary branches while evidence is incomplete and retain all protected, supported and long-lived branches.
 
