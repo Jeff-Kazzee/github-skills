@@ -5,7 +5,7 @@ description: Select feature, promotion, release and hotfix routes for projects w
 
 # Git flow
 
-Read the repository's release policy, branch history, protection rules, open PRs and active worktrees. Identify the actual development branch, production branch and any affected supported lines. Keep their existing names. Branch prefixes below are defaults where local rules permit them. If the release process is already documented, follow it.
+Read the repository's release policy, branch history, protection rules, open PRs and active worktrees. Identify the actual development branch, production branch and any affected supported lines. Fetch those branches and confirm their live tips before branching. For a production incident, identify the affected deployed revision on the relevant line. Keep the existing branch names. Branch prefixes below are defaults where local rules permit them. If the release process is already documented, follow it.
 
 | Situation | Start from | Destination and completion evidence |
 | --- | --- | --- |
